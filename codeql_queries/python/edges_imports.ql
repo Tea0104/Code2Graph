@@ -1,14 +1,13 @@
 import python
 
-// 查询模块之间的导入关系，输出源模块和被导入模块。
+// 查询导入关系，输出 import 语句和它引用的模块名。
 
-from Module m, Module imported
-where imported.getName() = m.getAnImportedModuleName()
+from Import i
 select
   "IMPORTS" as rel,
-  m.getLocation().getFile().getRelativePath() as fromFile,
-  m.getName() as fromName,
-  1 as fromLine,
-  imported.getLocation().getFile().getRelativePath() as toFile,
-  imported.getName() as toName,
+  i.getLocation().getFile().getRelativePath() as fromFile,
+  i.toString() as fromName,
+  i.getLocation().getStartLine() as fromLine,
+  i.getAnImportedModuleName() as toFile,
+  i.getAnImportedModuleName() as toName,
   1 as toLine
