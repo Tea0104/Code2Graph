@@ -56,7 +56,7 @@ def load_csv(path):
     p=Path(path)
     prefix=p.stem
     all_rows=read_csv(path)
-    result_files[prefix]=all_rows
+    result_files[prefix].extend(all_rows)
 
 
 #存入查询内容到result_files之后
@@ -82,8 +82,8 @@ def create_nodes():
             kind=value["kind"]
             name=value["name"]
             file=value["file"]
-            startline=value["startline"] 
-            endline=value["endline"]
+            startline=value["startLine"] 
+            endline=value["endLine"]
             node_id=f"{file}:{name}:{startline}"
             node=Node(node_id,kind,name,file,startline,endline).to_dict()
             nodes[node_id]=node
@@ -111,13 +111,13 @@ def create_edges():
             fromLine=value["fromLine"]
             toFile=value["toFile"]
             toName=value["toName"]
-            toLine=value["toLIne"]
+            toLine=value["toLine"]
             source_id=f"{fromFile}:{fromName}:{fromLine}"
             target_id=f"{toFile}:{toName}:{toLine}"
             edge_id=f"{source_id}:{target_id}:{rel}"
             source=nodes[source_id]
             target=nodes[target_id]
-            edge=Edge(source,target,rel,edge_id).to_dict()
+            edge=Edge(edge_id,source,target,rel).to_dict()
             edges[edge_id]=edge
 
 
