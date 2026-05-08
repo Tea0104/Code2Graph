@@ -102,6 +102,14 @@ class Edge:  #保存了起点、终点，用于建图
         return asdict(self)
 
 
+def ensure_node(node_id: str, file: str, name: str, line: str | int | None):
+    if node_id in nodes:
+        return nodes[node_id]
+    node = Node(node_id, "Entity", name, file, line or 0, None).to_dict()
+    nodes[node_id] = node
+    return node
+
+
 def create_edges():
     for key in EDGES.values():
         for value in key:
@@ -115,8 +123,8 @@ def create_edges():
             source_id=f"{fromFile}:{fromName}:{fromLine}"
             target_id=f"{toFile}:{toName}:{toLine}"
             edge_id=f"{source_id}:{target_id}:{rel}"
-            source=nodes[source_id]
-            target=nodes[target_id]
+            source=ensure_node(source_id, fromFile, fromName, fromLine)
+            target=ensure_node(target_id, toFile, toName, toLine)
             edge=Edge(edge_id,source,target,rel).to_dict()
             edges[edge_id]=edge
 
