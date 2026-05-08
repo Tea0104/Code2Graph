@@ -1,7 +1,8 @@
 import subprocess
 from pathlib import Path
 import argparse
-
+import json
+from csv2graph import load_csv,nodes,edges,create_nodes,create_edges
 
 def create_database(database_dir:Path,source_root:Path):
     database_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +77,17 @@ def main():
     create_database(database_dir, source_root)
     exported_csv_files = export_query_results(database_dir, query_dir, results_dir)
 
-    
+    for csv_file in exported_csv_files:
+        load_csv(csv_file)
+
+    create_nodes()
+    create_edges()
+
+    with open("./build/json/nodes.json", "w", encoding="utf-8") as f:
+        json.dump(nodes,f,ensure_ascii=False,indent=2)
+    with open("./build/json/edges.json", "w", encoding="utf-8") as f:
+        json.dump(edges,f,ensure_ascii=False,indent=2)
+
 
 if __name__ =="__main__":
     main()
