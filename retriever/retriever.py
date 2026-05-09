@@ -1,9 +1,7 @@
-"""Neo4j 代码图检索器，配合 import_to_neo4j.py 使用。"""
+"""Neo4j 代码图检索器，配合 neo4j_import.py 使用。"""
 
 from collections import defaultdict
 from typing import Optional
-
-ALL_LABELS = ["Function", "Class", "Module", "Variable"]
 
 
 class CodeGraphRetriever:
@@ -26,52 +24,39 @@ class CodeGraphRetriever:
         return d
 
     def search(self, keyword, kind=None, limit=30):
-        labels = [kind] if kind else ALL_LABELS
-        results = []
-        for label in labels:
-            cypher = f"""
-                MATCH (n:{label})
-                WHERE toLower(n.name) CONTAINS toLower($kw)
-                RETURN n ORDER BY n.name LIMIT {limit}
-            """
-            for r in self._run(cypher, kw=keyword):
-                results.append(self._n(r["n"]))
-            if len(results) >= limit:
-                break
-        return results[:limit]
+        kind_clause = "AND n.kind = $kind" if kind else ""
+        cypher = f"""
+            MATCH (n:CodeQLNode)
+            WHERE toLower(n.name) CONTAINS toLower($kw)
+            {kind_clause}
+            RETURN n ORDER BY n.name LIMIT {limit}
+        """
+        return [self._n(r["n"]) for r in self._run(cypher, kw=keyword, kind=kind)]
 
-    def neighbors(self, name):
-        matches = []
-        for label in ALL_LABELS:
-            recs = self._run(f"MATCH (n:{label} {{name: $name}}) RETURN n", name=name)
-            if not recs:
-                continue
-            node = self._n(recs[0]["n"])
+    def neighbors(self, node_id):
+        recs = self._run("MATCH (n:CodeQLNode {id: $id}) RETURN n", id=node_id)
+        if not recs:
+            return {"node": None, "outgoing": [], "incoming": []}
+        node = self._n(recs[0]["n"])
 
-            out_recs = self._run(
-                f"MATCH (n:{label} {{name: $name}})-[r]->(m) RETURN m, type(r) AS edge", name=name
-            )
-            outgoing = [{"neighbor": self._n(r["m"]), "edge": r["edge"]} for r in out_recs]
+        out_recs = self._run(
+            "MATCH (n:CodeQLNode {id: $id})-[r]->(m) RETURN m, type(r) AS edge", id=node_id
+        )
+        outgoing = [{"neighbor": self._n(r["m"]), "edge": r["edge"]} for r in out_recs]
 
-            in_recs = self._run(
-                f"MATCH (m)-[r]->(n:{label} {{name: $name}}) RETURN m, type(r) AS edge", name=name
-            )
-            incoming = [{"neighbor": self._n(r["m"]), "edge": r["edge"]} for r in in_recs]
+        in_recs = self._run(
+            "MATCH (m)-[r]->(n:CodeQLNode {id: $id}) RETURN m, type(r) AS edge", id=node_id
+        )
+        incoming = [{"neighbor": self._n(r["m"]), "edge": r["edge"]} for r in in_recs]
 
-            matches.append({"node": node, "label": label, "outgoing": outgoing, "incoming": incoming})
+        return {"node": node, "outgoing": outgoing, "incoming": incoming}
 
-        return {"name": name, "matches": matches}
-
-    def expand(self, name, hops=2, edge_type=None, direction="both"):
+    def expand(self, node_id, hops=2, edge_type=None, direction="both"):
         hops = max(1, min(hops, 10))
-        start_nodes = []
-        for label in ALL_LABELS:
-            recs = self._run(f"MATCH (n:{label} {{name: $name}}) RETURN n", name=name)
-            for r in recs:
-                start_nodes.append(self._n(r["n"]))
-
-        if not start_nodes:
-            return {"start_nodes": [], "nodes": [], "edges": [], "layers": []}
+        start = self._run("MATCH (n:CodeQLNode {id: $id}) RETURN n", id=node_id)
+        if not start:
+            return {"start_node": None, "nodes": [], "edges": [], "layers": []}
+        start_node = self._n(start[0]["n"])
 
         type_part = f":{edge_type}" if edge_type else ""
         dir_map = {
@@ -81,89 +66,82 @@ class CodeGraphRetriever:
         }
         arrow = dir_map[direction]
 
-        reached_names = set()
-        for sn in start_nodes:
-            lbl = sn["labels"][0]
-            cypher = f"MATCH (start:{lbl} {{name: $name}}){arrow}(reached) RETURN DISTINCT reached"
-            for r in self._run(cypher, name=name):
-                reached_names.add(r["reached"]["name"])
+        cypher = f"MATCH (start:CodeQLNode {{id: $id}}){arrow}(reached) RETURN DISTINCT reached"
+        reached_ids = {start_node["id"]}
+        for r in self._run(cypher, id=node_id):
+            reached_ids.add(r["reached"]["id"])
 
-        all_names = {sn["name"] for sn in start_nodes} | reached_names
-        all_nodes = list(start_nodes)
-        seen = {sn["name"] for sn in start_nodes}
-        for label in ALL_LABELS:
-            for r in self._run(
-                f"MATCH (n:{label}) WHERE n.name IN $names RETURN n", names=list(all_names)
-            ):
-                n = self._n(r["n"])
-                if n["name"] not in seen:
-                    all_nodes.append(n); seen.add(n["name"])
+        all_nodes = [start_node]
+        seen = {start_node["id"]}
+        for rid in reached_ids:
+            recs = self._run("MATCH (n:CodeQLNode {id: $id}) RETURN n", id=rid)
+            if recs:
+                n = self._n(recs[0]["n"])
+                if n["id"] not in seen:
+                    all_nodes.append(n); seen.add(n["id"])
 
-        edges = self._edges_between(list(all_names))
-        layers = self._build_layers(
-            {sn["name"] for sn in start_nodes}, all_nodes, edges, hops, direction, edge_type
-        )
-        return {"start_nodes": start_nodes, "nodes": all_nodes, "edges": edges, "layers": layers}
+        edges = self._edges_between(list(reached_ids))
+        layers = self._build_layers(start_node["id"], all_nodes, edges, hops, direction, edge_type)
+        return {"start_node": start_node, "nodes": all_nodes, "edges": edges, "layers": layers}
 
-    def _edges_between(self, names):
-        if len(names) < 2:
+    def _edges_between(self, ids):
+        if len(ids) < 2:
             return []
         cypher = """
-            MATCH (a)-[r]->(b)
-            WHERE a.name IN $names AND b.name IN $names
-            RETURN a.name AS source, b.name AS target, type(r) AS type
+            MATCH (a:CodeQLNode)-[r]->(b:CodeQLNode)
+            WHERE a.id IN $ids AND b.id IN $ids
+            RETURN a.id AS source, b.id AS target, type(r) AS type
         """
         return [
             {"source": r["source"], "target": r["target"], "type": r["type"]}
-            for r in self._run(cypher, names=names)
+            for r in self._run(cypher, ids=list(ids))
         ]
 
-    def _build_layers(self, start_names, nodes, edges, max_hops, direction, edge_type):
-        out_adj = defaultdict(list)
-        in_adj = defaultdict(list)
+    def _build_layers(self, start_id, nodes, edges, max_hops, direction, edge_type):
+        out_adj, in_adj = defaultdict(list), defaultdict(list)
         for e in edges:
             out_adj[e["source"]].append((e["target"], e["type"]))
             in_adj[e["target"]].append((e["source"], e["type"]))
 
-        name_set = {n["name"] for n in nodes}
+        id_to_node = {n["id"]: n for n in nodes}
         layers = []
-        frontier = set(start_names)
-        visited = set(start_names)
+        frontier = {start_id}
+        visited = {start_id}
 
         for hop in range(1, max_hops + 1):
             new = set()
             layer_edges = []
-            for nname in frontier:
+            for nid in frontier:
                 if direction in ("out", "both"):
-                    for tgt, ety in out_adj.get(nname, []):
-                        if (edge_type is None or ety == edge_type) and tgt in name_set:
-                            layer_edges.append({"source": nname, "target": tgt, "type": ety})
+                    for tgt, ety in out_adj.get(nid, []):
+                        if (edge_type is None or ety == edge_type) and tgt in id_to_node:
+                            layer_edges.append({"source": nid, "target": tgt, "type": ety})
                             if tgt not in visited:
                                 new.add(tgt); visited.add(tgt)
                 if direction in ("in", "both"):
-                    for src, ety in in_adj.get(nname, []):
-                        if (edge_type is None or ety == edge_type) and src in name_set:
-                            layer_edges.append({"source": src, "target": nname, "type": ety})
+                    for src, ety in in_adj.get(nid, []):
+                        if (edge_type is None or ety == edge_type) and src in id_to_node:
+                            layer_edges.append({"source": src, "target": nid, "type": ety})
                             if src not in visited:
                                 new.add(src); visited.add(src)
             if not new:
                 break
-            layer_nodes = [n for n in nodes if n["name"] in new]
+            layer_nodes = [id_to_node[nid] for nid in new]
             layers.append({"hop": hop, "nodes": layer_nodes, "edges": layer_edges})
             frontier = new
         return layers
 
     def summary(self):
-        node_counts = {}
-        for label in ALL_LABELS:
-            recs = self._run(f"MATCH (n:{label}) RETURN count(n) AS cnt")
-            cnt = recs[0]["cnt"] if recs else 0
-            if cnt:
-                node_counts[label] = cnt
+        kind_recs = self._run(
+            "MATCH (n:CodeQLNode) RETURN n.kind AS kind, count(n) AS cnt ORDER BY cnt DESC"
+        )
         edge_recs = self._run(
             "MATCH ()-[r]->() RETURN type(r) AS rel, count(r) AS cnt ORDER BY cnt DESC"
         )
-        return {"nodes": node_counts, "edges": {r["rel"]: r["cnt"] for r in edge_recs}}
+        return {
+            "nodes": {r["kind"]: r["cnt"] for r in kind_recs},
+            "edges": {r["rel"]: r["cnt"] for r in edge_recs},
+        }
 
 
 def _cli():
@@ -185,7 +163,7 @@ def _cli():
     s = cr.summary()
     print(f"  节点: {s['nodes']}")
     print(f"  边:   {s['edges']}")
-    print("\n  命令: search <kw> [kind] | neigh <name> | expand <name> [hops] [edge] [dir] | summary | quit\n")
+    print("\n  命令: search <kw> [kind] | neigh <id> | expand <id> [hops] [edge] [dir] | summary | quit\n")
 
     while True:
         try:
@@ -207,51 +185,52 @@ def _cli():
                 results = cr.search(kw, kind)
                 print(f"  {len(results)} 条结果:")
                 for n in results:
-                    print(f"    [{'|'.join(n['labels'])}] name={n['name']}")
+                    print(f"    [{n['kind']}] {n['id']}")
+                    print(f"      name={n['name']}, file={n.get('file','')}, line={n.get('startLine','')}-{n.get('endLine','')}")
+                if not results:
+                    print("    (无结果)")
             elif act == "neigh":
-                name = parts[1] if len(parts) > 1 else ""
-                r = cr.neighbors(name)
-                matches = r.get("matches", [])
-                if not matches:
-                    print(f"  [NOT FOUND] '{name}'")
+                nid = parts[1] if len(parts) > 1 else ""
+                r = cr.neighbors(nid)
+                if not r["node"]:
+                    print(f"  [NOT FOUND] '{nid}'")
                     continue
-                for i, m in enumerate(matches):
-                    n = m["node"]
-                    print(f"\n  --- [{m['label']}] {n['name']} ---")
-                    print(f"  出边 ({len(m['outgoing'])}):")
-                    for x in m["outgoing"][:15]:
-                        nb = x["neighbor"]
-                        print(f"    --[{x['edge']}]--> [{'|'.join(nb['labels'])}] {nb['name']}")
-                    if len(m["outgoing"]) > 15:
-                        print(f"    ... 还有 {len(m['outgoing']) - 15} 条")
-                    print(f"  入边 ({len(m['incoming'])}):")
-                    for x in m["incoming"][:15]:
-                        nb = x["neighbor"]
-                        print(f"    <--[{x['edge']}]-- [{'|'.join(nb['labels'])}] {nb['name']}")
-                    if len(m["incoming"]) > 15:
-                        print(f"    ... 还有 {len(m['incoming']) - 15} 条")
+                n = r["node"]
+                print(f"  [{n['kind']}] {n['name']}")
+                print(f"    id={n['id']}, file={n.get('file','')}, line={n.get('startLine','')}-{n.get('endLine','')}")
+                print(f"  出边 ({len(r['outgoing'])}):")
+                for x in r["outgoing"][:15]:
+                    nb = x["neighbor"]
+                    print(f"    --[{x['edge']}]--> [{nb['kind']}] {nb['name']}  ({nb.get('file','')}:{nb.get('startLine','')})")
+                if len(r["outgoing"]) > 15:
+                    print(f"    ... 还有 {len(r['outgoing']) - 15} 条")
+                print(f"  入边 ({len(r['incoming'])}):")
+                for x in r["incoming"][:15]:
+                    nb = x["neighbor"]
+                    print(f"    <--[{x['edge']}]-- [{nb['kind']}] {nb['name']}  ({nb.get('file','')}:{nb.get('startLine','')})")
+                if len(r["incoming"]) > 15:
+                    print(f"    ... 还有 {len(r['incoming']) - 15} 条")
             elif act == "expand":
-                name = parts[1] if len(parts) > 1 else ""
+                nid = parts[1] if len(parts) > 1 else ""
                 hops = int(parts[2]) if len(parts) > 2 else 2
                 etype = parts[3] if len(parts) > 3 else None
                 direction = parts[4] if len(parts) > 4 else "both"
-                r = cr.expand(name, hops=hops, edge_type=etype, direction=direction)
-                sn = r.get("start_nodes", [])
+                r = cr.expand(nid, hops=hops, edge_type=etype, direction=direction)
+                sn = r.get("start_node")
                 if not sn:
-                    print(f"  [NOT FOUND] '{name}'")
+                    print(f"  [NOT FOUND] '{nid}'")
                     continue
-                sn_info = ", ".join(f"[{'|'.join(n['labels'])}]" for n in sn)
-                print(f"  起点 ({len(sn)}): {sn_info}")
+                print(f"  起点: [{sn['kind']}] {sn['name']} ({sn.get('file','')}:{sn.get('startLine','')})")
                 print(f"  展开 {hops} 跳 ({direction}, {etype or '不限类型'})")
                 print(f"  共 {len(r['nodes'])} 节点, {len(r['edges'])} 边")
                 layers = r.get("layers", [])
                 if not layers:
-                    print(f"  -> 没有展开到新节点")
+                    print("  -> 没有展开到新节点")
                 else:
                     for layer in layers:
                         print(f"  -- 第 {layer['hop']} 跳 ({len(layer['nodes'])} 节点, {len(layer['edges'])} 边) --")
                         for n in layer["nodes"][:10]:
-                            print(f"    [{'|'.join(n['labels'])}] {n['name']}")
+                            print(f"    [{n['kind']}] {n['name']}  ({n.get('file','')}:{n.get('startLine','')})")
                         if len(layer["nodes"]) > 10:
                             print(f"    ... 还有 {len(layer['nodes']) - 10} 个")
             elif act == "summary":

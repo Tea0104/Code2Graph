@@ -21,3 +21,9 @@ python neo4j_import.py --nodes build/json/nodes.json --edges build/json/edges.js
 ```bash
 python neo4j_import.py --uri bolt://localhost:7687 --user neo4j --password your_password --clear-only
 ```
+
+retriever使用方法：
+
+```bash
+python retriever/retriever.py bolt://localhost:7687 neo4j your_password
+```

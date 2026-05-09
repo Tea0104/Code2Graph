@@ -1,6 +1,6 @@
 # Retriever
 
-配合 `tools/import_to_neo4j.py` 使用，从 Neo4j 代码图中检索节点及其关系。
+配合 `neo4j_import.py` 使用，从 Neo4j 代码图中检索节点及关系。
 
 ## 快速开始
 
@@ -13,9 +13,9 @@ python retriever/retriever.py bolt://localhost:7687 neo4j your_password
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `search <kw> [kind]` | 按名搜节点 | `search predict`, `search __init__ Function` |
-| `neigh <name>` | 查邻接（跨所有 label 分组展示） | `neigh predict` |
-| `expand <name> [hops] [edge] [dir]` | N跳展开 | `expand predict 3 CALLS out` |
+| `search <kw> [kind]` | 按名搜节点 | `search predict`, `search init Method` |
+| `neigh <id>` | 查邻接 | `neigh run.py:predict:328` |
+| `expand <id> [hops] [edge] [dir]` | N跳展开 | `expand run.py:predict:328 3 CALLS out` |
 | `summary` | 图表统计 | `summary` |
 
 ## Python API
@@ -25,10 +25,10 @@ from retriever import CodeGraphRetriever
 
 cr = CodeGraphRetriever("bolt://localhost:7687", ("neo4j", "password"))
 
-cr.search("predict")                          # 返回 list[dict]
-cr.search("__init__", kind="Function")        # 限定类型
-cr.neighbors("predict")                       # 出边 + 入边，跨 label 分组
-cr.expand("predict", hops=2, edge_type="CALLS", direction="out")  # 依赖闭包
-cr.summary()                                  # 节点/边统计
+cr.search("predict")                          # 关键字搜索 → list[dict]
+cr.search("__init__", kind="Method")           # 限定类型
+cr.neighbors("run.py:predict:328")            # 出边+入边
+cr.expand("run.py:predict:328", hops=3, edge_type="CALLS", direction="out")
+cr.summary()
 cr.close()
 ```

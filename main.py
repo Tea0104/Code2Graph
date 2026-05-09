@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main():
     args = build_parser().parse_args()
-    
+
     source_root = Path(args.source_root).resolve()
     database_dir = Path(args.database).resolve()
     results_dir = Path(args.results).resolve()

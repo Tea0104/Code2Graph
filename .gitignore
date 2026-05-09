@@ -1,4 +1,11 @@
-build
-__pycache__
-.vscode
-venv
+build/
+output/
+codeql_db/
+codeql_results/
+__pycache__/
+.vscode/
+venv/
+*.pyc
+QUICKSTART.md
+CHANGELOG.md
+.gitignore
