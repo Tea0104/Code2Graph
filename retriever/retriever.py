@@ -3,15 +3,27 @@
 from collections import defaultdict
 from typing import Optional
 
+try:
+    from faiss_store import FaissQueryStore
+except ImportError:
+    from .faiss_store import FaissQueryStore
+
 
 class CodeGraphRetriever:
     def __init__(self, uri="bolt://localhost:7687", auth=("neo4j", "neo4j")):
         from neo4j import GraphDatabase
-        self._driver = GraphDatabase.driver(uri, auth=auth)
-        self._driver.verify_connectivity()
+        self._cache = FaissQueryStore()
+        self._driver = None
+        try:
+            self._driver = GraphDatabase.driver(uri, auth=auth)
+            self._driver.verify_connectivity()
+        except Exception:
+            self._driver = None
 
     def close(self):
-        self._driver.close()
+        if self._driver:
+            self._driver.close()
+        self._cache.save()
 
     def _run(self, cypher, **params):
         with self._driver.session() as s:
@@ -24,6 +36,11 @@ class CodeGraphRetriever:
         return d
 
     def search(self, keyword, kind=None, limit=30):
+        hit = self._cache.get(keyword, kind=kind, limit=limit)
+        if hit is not None:
+            return hit
+        if not self._driver:
+            raise RuntimeError("Neo4j 不可用，且向量库未命中")
         kind_clause = "AND n.kind = $kind" if kind else ""
         cypher = f"""
             MATCH (n:CodeQLNode)
@@ -31,7 +48,9 @@ class CodeGraphRetriever:
             {kind_clause}
             RETURN n ORDER BY n.name LIMIT {limit}
         """
-        return [self._n(r["n"]) for r in self._run(cypher, kw=keyword, kind=kind)]
+        results = [self._n(r["n"]) for r in self._run(cypher, kw=keyword, kind=kind)]
+        self._cache.put(keyword, results, kind=kind, limit=limit)
+        return results
 
     def neighbors(self, node_id):
         recs = self._run("MATCH (n:CodeQLNode {id: $id}) RETURN n", id=node_id)
