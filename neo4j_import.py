@@ -20,6 +20,40 @@ DEFAULT_EDGES_PATH = Path("build/json/edges.json")
 DEFAULT_NODE_LABEL = "CodeQLNode"
 
 
+def extract_segment(file_path: Path, start_line: int | None, end_line: int | None) -> str | None:
+    if start_line is None:
+        return None
+
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
+        return None
+
+    start_index = max(start_line - 1, 0)
+    end_index = end_line if end_line is not None else start_line
+    end_index = max(end_index, start_line)
+    snippet = "\n".join(lines[start_index:end_index])
+    return snippet or None
+
+
+def _to_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_source_path(source_root: Path, file_value: Any) -> Path | None:
+    if not file_value:
+        return None
+    file_path = Path(str(file_value))
+    if file_path.is_absolute():
+        return file_path
+    return source_root / file_path
+
+
 def _safe_label(value: str | None) -> str:
     label = str(_normalize_value(value) or "Entity")
     label = re.sub(r"[^A-Za-z0-9_]", "_", label)
@@ -112,7 +146,8 @@ def import_nodes(tx, rows: list[dict[str, Any]], clear: bool) -> None:
                 n.startline = row.startline,
                 n.endline = row.endline,
                 n.startLine = row.startline,
-                n.endLine = row.endline
+                n.endLine = row.endline,
+                n.snippet = row.snippet
             """,
             rows=kind_rows,
         )
@@ -147,25 +182,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", default="neo4j", help="Neo4j username")
     parser.add_argument("--password", required=True, help="Neo4j password")
     parser.add_argument("--database", default=None, help="Neo4j database name, if your instance uses multi-database")
+    parser.add_argument("--source-root", default=None, help="Root directory of the source code used to extract snippets")
     parser.add_argument("--clear", action="store_true", help="Delete existing CodeQL nodes before import")
     parser.add_argument("--clear-only", action="store_true", help="Delete all Neo4j nodes and relationships, then exit")
     return parser
 
 
-def _prepare_node_rows(path: Path) -> list[dict[str, Any]]:
+def _prepare_node_rows(path: Path, source_root: Path | None) -> list[dict[str, Any]]:
     rows = []
     for row in _load_node_rows(path):
         node_id = _pick_id(row.get("id"))
         if not node_id:
             continue
+        startline = _to_int(_pick_node_field(row, "startline", "startLine", "lineno"))
+        endline = _to_int(_pick_node_field(row, "endline", "endLine", "end_lineno"))
+        snippet = None
+        if source_root is not None:
+            source_path = _resolve_source_path(source_root, _normalize_value(row.get("file")))
+            if source_path is not None:
+                snippet = extract_segment(source_path, startline, endline)
         rows.append(
             {
                 "id": node_id,
                 "kind": _normalize_value(_pick_node_field(row, "kind", "type")) or DEFAULT_NODE_LABEL,
                 "name": _normalize_value(row.get("name")),
                 "file": _normalize_value(row.get("file")),
-                "startline": _pick_node_field(row, "startline", "startLine", "lineno"),
-                "endline": _pick_node_field(row, "endline", "endLine", "end_lineno"),
+                "startline": startline,
+                "endline": endline,
+                "snippet": snippet,
             }
         )
     return rows
@@ -216,7 +260,8 @@ def main() -> int:
     if not edges_path.exists():
         raise FileNotFoundError(f"Edges JSON not found: {edges_path}")
 
-    node_rows = _prepare_node_rows(nodes_path)
+    source_root = Path(args.source_root).resolve() if args.source_root else None
+    node_rows = _prepare_node_rows(nodes_path, source_root)
     edge_rows = _prepare_edge_rows(edges_path)
 
     driver = GraphDatabase.driver(args.uri, auth=(args.user, args.password))
