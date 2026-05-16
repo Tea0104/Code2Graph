@@ -162,6 +162,25 @@ class CodeGraphRetriever:
             "edges": {r["rel"]: r["cnt"] for r in edge_recs},
         }
 
+    def node_info(self, node_id):
+        """Return full node details including code snippets for LLM consumption."""
+        recs = self._run("MATCH (n:CodeQLNode {id: $id}) RETURN n", id=node_id)
+        if not recs:
+            return None
+        node = self._n(recs[0]["n"])
+        # Fetch relationships so the caller knows what this node calls / is called by
+        out_recs = self._run(
+            "MATCH (n:CodeQLNode {id: $id})-[r]->(m) RETURN m.id AS target, type(r) AS edge LIMIT 50",
+            id=node_id,
+        )
+        in_recs = self._run(
+            "MATCH (m)-[r]->(n:CodeQLNode {id: $id}) RETURN m.id AS source, type(r) AS edge LIMIT 50",
+            id=node_id,
+        )
+        node["outgoing"] = [{"target": r["target"], "edge": r["edge"]} for r in out_recs]
+        node["incoming"] = [{"source": r["source"], "edge": r["edge"]} for r in in_recs]
+        return node
+
 
 def _cli():
     import sys
@@ -182,7 +201,7 @@ def _cli():
     s = cr.summary()
     print(f"  节点: {s['nodes']}")
     print(f"  边:   {s['edges']}")
-    print("\n  命令: search <kw> [kind] | neigh <id> | expand <id> [hops] [edge] [dir] | summary | quit\n")
+    print("\n  命令: search <kw> [kind] | detail <id> | neigh <id> | expand <id> [hops] [edge] [dir] | summary | quit\n")
 
     while True:
         try:
@@ -252,12 +271,41 @@ def _cli():
                             print(f"    [{n['kind']}] {n['name']}  ({n.get('file','')}:{n.get('startLine','')})")
                         if len(layer["nodes"]) > 10:
                             print(f"    ... 还有 {len(layer['nodes']) - 10} 个")
+            elif act == "detail":
+                nid = parts[1] if len(parts) > 1 else ""
+                info = cr.node_info(nid)
+                if not info:
+                    print(f"  [NOT FOUND] '{nid}'")
+                    continue
+                print(f"  [{info['kind']}] {info['name']}")
+                print(f"  id:    {info['id']}")
+                print(f"  file:  {info.get('file','')}")
+                print(f"  lines: {info.get('startLine','')}-{info.get('endLine','')}")
+                ds = info.get('definitionSnippet')
+                if ds:
+                    print(f"  def:   {ds[:200]}")
+                ims = info.get('implementationSnippet')
+                if ims:
+                    print(f"  --- implementationSnippet ({len(ims)} chars) ---")
+                    print(ims[:800])
+                    if len(ims) > 800:
+                        print(f"  ... truncated ({len(ims) - 800} more chars)")
+                print(f"  outgoing ({len(info['outgoing'])}):")
+                for x in info["outgoing"][:10]:
+                    print(f"    --[{x['edge']}]--> {x['target']}")
+                if len(info["outgoing"]) > 10:
+                    print(f"    ... {len(info['outgoing']) - 10} more")
+                print(f"  incoming ({len(info['incoming'])}):")
+                for x in info["incoming"][:10]:
+                    print(f"    <--[{x['edge']}]-- {x['source']}")
+                if len(info["incoming"]) > 10:
+                    print(f"    ... {len(info['incoming']) - 10} more")
             elif act == "summary":
                 s = cr.summary()
                 print("  节点:"); [print(f"    {k}: {v}") for k, v in s["nodes"].items()]
                 print("  边:");   [print(f"    {k}: {v}") for k, v in s["edges"].items()]
             else:
-                print(f"  未知: {act}  |  可用: search / neigh / expand / summary / quit")
+                print(f"  未知: {act}  |  可用: search / detail / neigh / expand / summary / quit")
         except Exception as e:
             print(f"  [ERROR] {e}")
 

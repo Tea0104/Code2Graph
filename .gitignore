@@ -9,3 +9,5 @@ venv/
 QUICKSTART.md
 CHANGELOG.md
 .gitignore
+retriever/web_ui.py
+retriever/faiss_cache.*

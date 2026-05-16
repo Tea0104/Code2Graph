@@ -39,6 +39,20 @@ def extract_segment(file_path: Path, start_line: int | None, end_line: int | Non
     return snippet or None
 
 
+def extract_definition_header(file_path: Path, start_line: int | None) -> str | None:
+    """Extract only the first line (definition header) of a code element."""
+    if start_line is None:
+        return None
+    try:
+        lines = _read_source_lines(file_path)
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
+        return None
+    idx = max(start_line - 1, 0)
+    if idx < len(lines):
+        return lines[idx].strip() or None
+    return None
+
+
 @lru_cache(maxsize=2048)
 def _read_source_lines(file_path: Path) -> list[str]:
     return file_path.read_text(encoding="utf-8").splitlines()
@@ -159,7 +173,8 @@ def import_nodes(tx, rows: list[dict[str, Any]], clear: bool) -> None:
                 n.endline = row.endline,
                 n.startLine = row.startline,
                 n.endLine = row.endline,
-                n.definitionSnippet = row.definitionSnippet
+                n.definitionSnippet = row.definitionSnippet,
+                n.implementationSnippet = row.implementationSnippet
             """,
             rows=kind_rows,
         )
@@ -200,29 +215,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _normalize_file_path(file_value: str | None, source_root: Path | None) -> str | None:
+    """Convert absolute paths under source_root to relative so IDs match edge endpoints."""
+    if not file_value:
+        return None
+    file_path = Path(file_value)
+    if file_path.is_absolute() and source_root is not None:
+        try:
+            rel = file_path.relative_to(source_root)
+            return str(rel).replace("\\", "/")
+        except ValueError:
+            return file_value.replace("\\", "/")
+    return file_value.replace("\\", "/")
+
+
 def _prepare_node_rows(path: Path, source_root: Path | None) -> list[dict[str, Any]]:
     rows = []
     for row in _load_node_rows(path):
-        node_id = _pick_id(row.get("id"))
+        raw_file = _normalize_value(row.get("file"))
+        normalized_file = _normalize_file_path(raw_file, source_root) if raw_file else None
+        name = _normalize_value(row.get("name")) or ""
+        raw_line = _pick_node_field(row, "startline", "startLine", "lineno")
+        startline = _to_int(raw_line)
+        endline = _to_int(_pick_node_field(row, "endline", "endLine", "end_lineno"))
+
+        # Rebuild node ID with normalized file path so it matches edge endpoints
+        node_id = f"{normalized_file}:{name}:{raw_line}" if normalized_file and name and raw_line is not None else (_pick_id(row.get("id")) or "")
         if not node_id:
             continue
-        startline = _to_int(_pick_node_field(row, "startline", "startLine", "lineno"))
-        endline = _to_int(_pick_node_field(row, "endline", "endLine", "end_lineno"))
+
         definition_snippet = None
         implementation_snippet = None
-        if source_root is not None:
-            source_path = _resolve_source_path(source_root, _normalize_value(row.get("file")))
+        if source_root is not None and raw_file:
+            source_path = _resolve_source_path(source_root, raw_file)
             if source_path is not None:
                 kind = _normalize_value(_pick_node_field(row, "kind", "type")) or DEFAULT_NODE_LABEL
                 if kind in TARGET_NODE_KINDS:
-                    definition_snippet = extract_segment(source_path, startline, endline)
+                    definition_snippet = extract_definition_header(source_path, startline)
                     implementation_snippet = extract_segment(source_path, startline, endline)
         rows.append(
             {
                 "id": node_id,
                 "kind": _normalize_value(_pick_node_field(row, "kind", "type")) or DEFAULT_NODE_LABEL,
                 "name": _normalize_value(row.get("name")),
-                "file": _normalize_value(row.get("file")),
+                "file": normalized_file,
                 "startline": startline,
                 "endline": endline,
                 "definitionSnippet": definition_snippet,
