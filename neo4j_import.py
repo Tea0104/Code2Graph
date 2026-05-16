@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from neo4j import GraphDatabase
 DEFAULT_NODES_PATH = Path("build/json/nodes.json")
 DEFAULT_EDGES_PATH = Path("build/json/edges.json")
 DEFAULT_NODE_LABEL = "CodeQLNode"
+TARGET_NODE_KINDS = {"Class", "Function", "Method"}
+NODE_LABEL_OVERRIDES = {"ClassAttribute": "classAttribute"}
 
 
 def extract_segment(file_path: Path, start_line: int | None, end_line: int | None) -> str | None:
@@ -25,7 +28,7 @@ def extract_segment(file_path: Path, start_line: int | None, end_line: int | Non
         return None
 
     try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
+        lines = _read_source_lines(file_path)
     except (FileNotFoundError, UnicodeDecodeError, OSError):
         return None
 
@@ -34,6 +37,11 @@ def extract_segment(file_path: Path, start_line: int | None, end_line: int | Non
     end_index = max(end_index, start_line)
     snippet = "\n".join(lines[start_index:end_index])
     return snippet or None
+
+
+@lru_cache(maxsize=2048)
+def _read_source_lines(file_path: Path) -> list[str]:
+    return file_path.read_text(encoding="utf-8").splitlines()
 
 
 def _to_int(value: Any) -> int | None:
@@ -55,7 +63,11 @@ def _resolve_source_path(source_root: Path, file_value: Any) -> Path | None:
 
 
 def _safe_label(value: str | None) -> str:
-    label = str(_normalize_value(value) or "Entity")
+    normalized_value = _normalize_value(value)
+    if normalized_value in NODE_LABEL_OVERRIDES:
+        return NODE_LABEL_OVERRIDES[normalized_value]
+
+    label = str(normalized_value or "Entity")
     label = re.sub(r"[^A-Za-z0-9_]", "_", label)
     if label and label[0].isdigit():
         label = f"L_{label}"
@@ -147,7 +159,7 @@ def import_nodes(tx, rows: list[dict[str, Any]], clear: bool) -> None:
                 n.endline = row.endline,
                 n.startLine = row.startline,
                 n.endLine = row.endline,
-                n.snippet = row.snippet
+                n.definitionSnippet = row.definitionSnippet
             """,
             rows=kind_rows,
         )
@@ -196,11 +208,15 @@ def _prepare_node_rows(path: Path, source_root: Path | None) -> list[dict[str, A
             continue
         startline = _to_int(_pick_node_field(row, "startline", "startLine", "lineno"))
         endline = _to_int(_pick_node_field(row, "endline", "endLine", "end_lineno"))
-        snippet = None
+        definition_snippet = None
+        implementation_snippet = None
         if source_root is not None:
             source_path = _resolve_source_path(source_root, _normalize_value(row.get("file")))
             if source_path is not None:
-                snippet = extract_segment(source_path, startline, endline)
+                kind = _normalize_value(_pick_node_field(row, "kind", "type")) or DEFAULT_NODE_LABEL
+                if kind in TARGET_NODE_KINDS:
+                    definition_snippet = extract_segment(source_path, startline, endline)
+                    implementation_snippet = extract_segment(source_path, startline, endline)
         rows.append(
             {
                 "id": node_id,
@@ -209,7 +225,8 @@ def _prepare_node_rows(path: Path, source_root: Path | None) -> list[dict[str, A
                 "file": _normalize_value(row.get("file")),
                 "startline": startline,
                 "endline": endline,
-                "snippet": snippet,
+                "definitionSnippet": definition_snippet,
+                "implementationSnippet": implementation_snippet,
             }
         )
     return rows
