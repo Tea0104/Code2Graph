@@ -25,7 +25,8 @@ result_files={
     "nodes_callables": [],
     "nodes_imports": [],
     "nodes_parameters": [],
-    "nodes_variables": [],
+    "nodes_classAttribute": [],
+    #"nodes_variables": [],
     "edges_calls":[],
     "edges_defines":[],
     "edges_imports":[],
@@ -40,7 +41,8 @@ NODES = {
     "nodes_callables": result_files["nodes_callables"],
     "nodes_imports": result_files["nodes_imports"],
     "nodes_parameters": result_files["nodes_parameters"],
-    "nodes_variables": result_files["nodes_variables"],
+    "nodes_classAttribute": result_files["nodes_classAttribute"],
+    #"nodes_variables": result_files["nodes_variables"],
 }
 
 EDGES = {
