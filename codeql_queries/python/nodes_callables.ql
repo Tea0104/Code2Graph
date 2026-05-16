@@ -1,24 +1,21 @@
 import python
+import Extents
 
 // 查询 Python 函数和方法节点，输出调用体所在文件、名称和位置。
 
 predicate callableNode(string kind, string file, string name, int startLine, int endLine) {
-  exists(Function c |
+  exists(RangeFunction c |
     c.isMethod() and
     kind = "Method" and
-    file = c.getLocation().getFile().getRelativePath() and
-    name = c.getName() and
-    startLine = c.getLocation().getStartLine() and
-    endLine = c.getLocation().getEndLine()
+    c.hasLocationInfo(file, startLine, _, endLine, _) and
+    name = c.getName()
   )
   or
-  exists(Function c |
+  exists(RangeFunction c |
     not c.isMethod() and
     kind = "Function" and
-    file = c.getLocation().getFile().getRelativePath() and
-    name = c.getName() and
-    startLine = c.getLocation().getStartLine() and
-    endLine = c.getLocation().getEndLine()
+    c.hasLocationInfo(file, startLine, _, endLine, _) and
+    name = c.getName()
   )
 }
 
