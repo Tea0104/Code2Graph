@@ -1,6 +1,59 @@
 import csv
+import os
 from pathlib import Path
 from dataclasses import dataclass,asdict
+
+
+# 路径归一化：Extents.qll 返回绝对路径，其他查询返回相对路径，
+# 统一砍掉共同前缀，使所有路径为相对路径。
+_SOURCE_PREFIX = None
+
+
+def _detect_prefix():
+    """扫描所有 CSV 数据，检测绝对路径的共同前缀。"""
+    global _SOURCE_PREFIX
+    abs_dirs = set()
+    rel_files = set()
+    for rows in result_files.values():
+        for row in rows:
+            for key in ["file", "fromFile", "toFile"]:
+                v = row.get(key, "")
+                if not v:
+                    continue
+                v = v.replace("\\", "/")
+                if ":/" in v:
+                    abs_dirs.add(os.path.dirname(v))
+                else:
+                    rel_files.add(v)
+    # 绝对路径去掉哪个前缀后能匹配到相对路径
+    for d in sorted(abs_dirs, key=len, reverse=True):
+        prefix = d + "/"
+        # 测试：所有绝对路径去掉前缀后是否都出现在相对路径集合中
+        matched = True
+        count = 0
+        for rows in result_files.values():
+            for row in rows:
+                for key in ["file", "fromFile", "toFile"]:
+                    v = row.get(key, "").replace("\\", "/")
+                    if v.startswith(prefix):
+                        count += 1
+                        if v[len(prefix):] not in rel_files:
+                            matched = False
+                            break
+        if matched and count > 0:
+            _SOURCE_PREFIX = prefix
+            return
+    _SOURCE_PREFIX = ""
+
+
+def _normalize_path(filepath: str) -> str:
+    """将绝对路径转换为相对路径。"""
+    if not filepath:
+        return filepath
+    fp = filepath.replace("\\", "/")
+    if _SOURCE_PREFIX and fp.startswith(_SOURCE_PREFIX):
+        return fp[len(_SOURCE_PREFIX):]
+    return fp
 
 #读单个csv文件
 def read_csv(path:Path):
@@ -79,12 +132,13 @@ class Node:
     
 
 def create_nodes():
+    _detect_prefix()
     for key in NODES.values():
         for value in key:
             kind=value["kind"]
             name=value["name"]
-            file=value["file"]
-            startline=value["startLine"] 
+            file=_normalize_path(value["file"])
+            startline=value["startLine"]
             endline=value["endLine"]
             node_id=f"{file}:{name}:{startline}"
             node=Node(node_id,kind,name,file,startline,endline).to_dict()
@@ -116,10 +170,10 @@ def create_edges():
     for key in EDGES.values():
         for value in key:
             rel=value["rel"]
-            fromFile=value["fromFile"]
+            fromFile=_normalize_path(value["fromFile"])
             fromName=value["fromName"]
             fromLine=value["fromLine"]
-            toFile=value["toFile"]
+            toFile=_normalize_path(value["toFile"])
             toName=value["toName"]
             toLine=value["toLine"]
             source_id=f"{fromFile}:{fromName}:{fromLine}"
