@@ -7,14 +7,18 @@ predicate callableNode(string kind, string file, string name, int startLine, int
   exists(RangeFunction c |
     c.isMethod() and
     kind = "Method" and
-    c.hasLocationInfo(file, startLine, _, endLine, _) and
+    file = c.getLocation().getFile().getRelativePath() and
+    startLine = c.getLocation().getStartLine() and
+    endLine = c.getLocation().getEndLine() and
     name = c.getName()
   )
   or
   exists(RangeFunction c |
     not c.isMethod() and
     kind = "Function" and
-    c.hasLocationInfo(file, startLine, _, endLine, _) and
+    file = c.getLocation().getFile().getRelativePath() and
+    startLine = c.getLocation().getStartLine() and
+    endLine = c.getLocation().getEndLine() and
     name = c.getName()
   )
 }

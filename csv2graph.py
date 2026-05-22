@@ -161,10 +161,8 @@ class Edge:  #保存了起点、终点，用于建图
 def ensure_node(node_id: str, file: str, name: str, line: str | int | None):
     if node_id in nodes:
         return nodes[node_id]
-    node = Node(node_id, "Entity", name, file, line or 0, None).to_dict()
-    nodes[node_id] = node
-    return node
-
+    
+#这里会把不存在的节点放到node集合中
 
 def create_edges():
     for key in EDGES.values():
