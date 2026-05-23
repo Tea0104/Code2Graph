@@ -34,26 +34,16 @@ predicate definesEdge(
     toLine = f.getLocation().getStartLine()
   )
   or
-  exists(Module m, GlobalVariable v |
-    v.getScope() = m and
+  exists(Module m, AssignStmt a, GlobalVariable v |
+    a.defines(v) and
+    a.getScope() = m and
     rel = "DEFINES" and
     fromFile = m.getFile().getRelativePath() and
     fromName = m.getFile().getBaseName() and
     fromLine = 1 and
-    toFile = v.getAnAccess().getLocation().getFile().getRelativePath() and
+    toFile = a.getLocation().getFile().getRelativePath() and
     toName = v.getId() and
-    toLine = v.getAnAccess().getLocation().getStartLine()
-  )
-  or
-  exists(Module m, Import i |
-    i.getScope() = m and
-    rel = "DEFINES" and
-    fromFile = m.getFile().getRelativePath() and
-    fromName = m.getFile().getBaseName() and
-    fromLine = 1 and
-    toFile = i.getLocation().getFile().getRelativePath() and
-    toName = i.toString() and
-    toLine = i.getLocation().getStartLine()
+    toLine = a.getLocation().getStartLine()
   )
   or
   exists(Class c, Function f |
@@ -77,17 +67,6 @@ predicate definesEdge(
     toFile = a.getLocation().getFile().getRelativePath() and
     toName = a.getName() and
     toLine = a.getLocation().getStartLine()
-  )
-  or
-  exists(Function f, Parameter p |
-    p.getVariable().getScope() = f and
-    rel = "DEFINES" and
-    fromFile = f.getLocation().getFile().getRelativePath() and
-    fromName = f.getName() and
-    fromLine = f.getLocation().getStartLine() and
-    toFile = p.getLocation().getFile().getRelativePath() and
-    toName = p.getName() and
-    toLine = p.getLocation().getStartLine()
   )
   or
   exists(Function f, LocalVariable v |

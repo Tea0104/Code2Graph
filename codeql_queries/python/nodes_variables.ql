@@ -1,6 +1,6 @@
 import python
 
-// 查询 Python 类属性变量节点，输出名称、文件和位置。
+// 查询 Python 类属性和全局变量节点，输出名称、文件和位置。
 
 predicate variableNode(string kind, string file, string name, int startLine, int endLine) {
   exists(Class c, Attribute v |
@@ -18,6 +18,16 @@ predicate variableNode(string kind, string file, string name, int startLine, int
     kind = "ClassAttribute" and
     file = a.getLocation().getFile().getRelativePath() and
     name = target.getId() and
+    startLine = a.getLocation().getStartLine() and
+    endLine = a.getLocation().getEndLine()
+  )
+  or
+  exists(Module m, AssignStmt a, GlobalVariable v |
+    a.defines(v) and
+    a.getScope() = m and
+    kind = "GlobalVariable" and
+    file = a.getLocation().getFile().getRelativePath() and
+    name = v.getId() and
     startLine = a.getLocation().getStartLine() and
     endLine = a.getLocation().getEndLine()
   )

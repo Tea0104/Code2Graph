@@ -72,39 +72,16 @@ def read_csv(path:Path):
         return all_rows
     
 
-result_files={
-    "nodes_modules": [],
-    "nodes_classes": [],
-    "nodes_callables": [],
-    "nodes_imports": [],
-    "nodes_parameters": [],
-    "nodes_classAttribute": [],
-    #"nodes_variables": [],
-    "edges_calls":[],
-    "edges_defines":[],
-    "edges_imports":[],
-    "edges_inherits":[],
-    "edges_references":[],
-}
-
-#对result_files的引用
-NODES = {
-    "nodes_modules": result_files["nodes_modules"],
-    "nodes_classes": result_files["nodes_classes"],
-    "nodes_callables": result_files["nodes_callables"],
-    "nodes_imports": result_files["nodes_imports"],
-    "nodes_parameters": result_files["nodes_parameters"],
-    "nodes_classAttribute": result_files["nodes_classAttribute"],
-    #"nodes_variables": result_files["nodes_variables"],
-}
-
-EDGES = {
-    "edges_calls":result_files["edges_calls"],
-    "edges_defines":result_files["edges_defines"],
-    "edges_imports":result_files["edges_imports"],
-    "edges_inherits":result_files["edges_inherits"],
-    "edges_references":result_files["edges_references"],
-}
+result_files={}
+NODES={}
+EDGES={}
+for file in os.listdir("./build/queries"):
+    no_suffix=file.rsplit(".",1)[0]
+    result_files[no_suffix]=[]
+    prefix=no_suffix.split("_",1)[0]
+    if prefix == "nodes":
+        NODES[no_suffix]=result_files[no_suffix]
+    else: EDGES[no_suffix]=result_files[no_suffix]
 
 #按照查询文件名称分别保存查询文件的结果
 def load_csv(path):
