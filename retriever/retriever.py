@@ -10,10 +10,11 @@ except ImportError:
 
 
 class CodeGraphRetriever:
-    def __init__(self, uri="bolt://localhost:7687", auth=("neo4j", "neo4j")):
+    def __init__(self, uri="bolt://localhost:7687", auth=("neo4j", "neo4j"), database=None):
         from neo4j import GraphDatabase
         self._cache = FaissQueryStore()
         self._driver = None
+        self._database = database
         try:
             self._driver = GraphDatabase.driver(uri, auth=auth)
             self._driver.verify_connectivity()
@@ -26,7 +27,10 @@ class CodeGraphRetriever:
         self._cache.save()
 
     def _run(self, cypher, **params):
-        with self._driver.session() as s:
+        kwargs = {}
+        if self._database:
+            kwargs["database"] = self._database
+        with self._driver.session(**kwargs) as s:
             return list(s.run(cypher, **params))
 
     @staticmethod

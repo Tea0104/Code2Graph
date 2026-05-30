@@ -60,6 +60,16 @@ class CppExtractor(BaseExtractor):
         self.scope_index[class_id] = class_scope
         scope_stack.append(class_scope)
 
+        for child in node.named_children:
+            if child.type == "base_class_clause":
+                for base in child.named_children:
+                    if base.type in {"type_identifier", "qualified_identifier"}:
+                        base_name = _identifier_text(base, source)
+                        if base_name:
+                            base_id = self._resolve_name(base_name, scope_stack[:-1])
+                            if base_id and base_id != class_id:
+                                self.graph.add_edge("INHERITS", class_id, base_id)
+
         body = node.child_by_field_name("body")
         if body is not None:
             for child in body.named_children:
@@ -109,21 +119,33 @@ class CppExtractor(BaseExtractor):
     def _cpp_function_name(self, node, source: str) -> str:
         declarator = node.child_by_field_name("declarator")
         if declarator is not None:
-            name = declarator.child_by_field_name("declarator") or declarator.child_by_field_name("name")
-            if name is None:
-                for candidate in declarator.named_children:
-                    if candidate.type in {"identifier", "field_identifier", "qualified_identifier"}:
-                        name = candidate
-                        break
-            if name is not None:
-                text = _identifier_text(name, source)
-                if text:
-                    return text.split("::")[-1]
+            # Walk through pointer/reference declarators to reach function_declarator
+            while declarator.type in {"pointer_declarator", "reference_declarator",
+                                       "array_declarator", "rvalue_reference_declarator"}:
+                inner = declarator.child_by_field_name("declarator")
+                if inner is not None:
+                    declarator = inner
+                else:
+                    break
+            if declarator.type == "function_declarator":
+                name_node = declarator.child_by_field_name("declarator")
+                if name_node is not None:
+                    text = _identifier_text(name_node, source)
+                    if text:
+                        # Only split :: for bare identifiers, not for text containing parens
+                        return text if "(" in text else text.split("::")[-1]
+            # Fallback: search declarator's named children
+            for candidate in declarator.named_children:
+                if candidate.type in {"identifier", "field_identifier", "qualified_identifier"}:
+                    text = _identifier_text(candidate, source)
+                    if text:
+                        return text if "(" in text else text.split("::")[-1]
+        # Last resort: search function_definition's direct named children
         for candidate in node.named_children:
             if candidate.type in {"identifier", "field_identifier", "qualified_identifier"}:
                 text = _identifier_text(candidate, source)
                 if text:
-                    return text.split("::")[-1]
+                    return text if "(" in text else text.split("::")[-1]
         return "Function"
 
     def _collect_cpp_parameters(self, node, function_scope: ScopeState, source: str) -> None:
@@ -143,14 +165,23 @@ class CppExtractor(BaseExtractor):
                 if name:
                     function_scope.symbols[name] = None
 
-    def _collect_cpp_declaration(self, node, source: str, scope: ScopeState) -> None:
-        kind = "ClassAttribute" if scope.kind == "class" else ("LocalVariable" if scope.kind == "function" else "GlobalVariable")
+    @staticmethod
+    def _declarator_names(node, source: str) -> list[str]:
+        """Recursively collect identifier names from a declarator chain."""
         names: list[str] = []
-        for candidate in node.named_children:
-            if candidate.type in {"identifier", "field_identifier"}:
-                text = _identifier_text(candidate, source)
+        for child in node.named_children:
+            if child.type in {"identifier", "field_identifier", "type_identifier"}:
+                text = _identifier_text(child, source)
                 if text:
                     names.append(text)
+            elif child.type in {"init_declarator", "pointer_declarator", "reference_declarator",
+                                "array_declarator", "rvalue_reference_declarator"}:
+                names.extend(CppExtractor._declarator_names(child, source))
+        return names
+
+    def _collect_cpp_declaration(self, node, source: str, scope: ScopeState) -> None:
+        kind = "ClassAttribute" if scope.kind == "class" else ("LocalVariable" if scope.kind == "function" else "GlobalVariable")
+        names = self._declarator_names(node, source)
         for name in names:
             if kind == "LocalVariable":
                 scope.symbols[name] = None
@@ -244,6 +275,11 @@ class CppExtractor(BaseExtractor):
             target_id = self._resolve_cpp_callable(node, source, scope_stack)
             if target_id:
                 self.graph.add_edge("CALLS", current_function.node_id, target_id)
+
+        for child in node.named_children:
+            if child.type in {"identifier", "field_identifier"} and self._is_cpp_definition_context(child):
+                continue
+            self._collect_cpp_references(child, source, scope_stack)
         return True
 
     def _handle_identifier_reference(self, node, source: str, scope_stack: list[ScopeState]) -> bool:
