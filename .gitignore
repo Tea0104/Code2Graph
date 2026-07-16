@@ -11,3 +11,5 @@ CHANGELOG.md
 .gitignore
 retriever/web_ui.py
 retriever/faiss_cache.*
+test_cpp/
+test_fixtures/

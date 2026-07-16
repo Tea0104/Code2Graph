@@ -115,7 +115,7 @@ class PythonExtractor(BaseExtractor):
         scope.symbols[import_name] = import_id
 
     def _handle_assignment_definition(self, node, source: str, scope_stack: list[ScopeState]) -> None:
-        self._collect_python_assignment(node, source, scope_stack[-1])
+        self._collect_python_assignment(node, source, scope_stack)
 
     def _collect_python_parameters(self, function_node, function_scope: ScopeState, source: str) -> None:
         parameters = function_node.child_by_field_name("parameters")
@@ -154,7 +154,8 @@ class PythonExtractor(BaseExtractor):
 
         return [name for name in names if name]
 
-    def _collect_python_assignment(self, node, source: str, scope: ScopeState) -> None:
+    def _collect_python_assignment(self, node, source: str, scope_stack: list[ScopeState]) -> None:
+        scope = scope_stack[-1]
         assignment = node
         if node.type == "expression_statement" and node.named_children:
             assignment = node.named_children[0]
@@ -163,25 +164,43 @@ class PythonExtractor(BaseExtractor):
             return
 
         target_names = self._assignment_target_names(assignment, source)
-        if not target_names:
-            return
 
-        if scope.kind == "module":
-            kind = "GlobalVariable"
-        elif scope.kind == "class":
-            kind = "ClassAttribute"
-        else:
-            kind = None
+        if target_names:
+            if scope.kind == "module":
+                kind = "GlobalVariable"
+            elif scope.kind == "class":
+                kind = "ClassAttribute"
+            else:
+                kind = None
 
-        for name in target_names:
-            if kind is None:
-                scope.symbols[name] = None
-                continue
-            if name in scope.symbols:
-                continue
-            target_id = self.graph.add_node(kind, name, scope.file, _line_start(assignment), _line_end(assignment))
-            self.graph.add_edge("DEFINES", scope.node_id, target_id)
-            scope.symbols[name] = target_id
+            for name in target_names:
+                if kind is None:
+                    scope.symbols[name] = None
+                    continue
+                if name in scope.symbols:
+                    continue
+                target_id = self.graph.add_node(kind, name, scope.file, _line_start(assignment), _line_end(assignment))
+                self.graph.add_edge("DEFINES", scope.node_id, target_id)
+                scope.symbols[name] = target_id
+
+        # Handle self.attr = value assignments (attribute left side)
+        left = assignment.child_by_field_name("left") or assignment.child_by_field_name("target")
+        if left is not None and left.type == "attribute":
+            object_node = left.child_by_field_name("object")
+            attr_node = left.child_by_field_name("attribute")
+            if object_node is not None and attr_node is not None:
+                obj_text = _node_text(source, object_node).strip()
+                if obj_text == "self":
+                    attr_name = _identifier_text(attr_node, source)
+                    if attr_name:
+                        current_class = self._current_class_scope(scope_stack)
+                        if current_class is not None and attr_name not in current_class.symbols:
+                            target_id = self.graph.add_node(
+                                "ClassAttribute", attr_name, scope.file,
+                                _line_start(assignment), _line_end(assignment)
+                            )
+                            self.graph.add_edge("DEFINES", current_class.node_id, target_id)
+                            current_class.symbols[attr_name] = target_id
 
     def _collect_references(self, node, source: str, scope: ScopeState) -> None:
         scope_stack = [scope]
