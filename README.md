@@ -1,21 +1,14 @@
 # Code2Graph
 
-main.py使用方法：
+tree-sitter 版本的图抽取入口：
 
 ```bash
-python main.py --source-root (写希望被建立数据库的仓库地址) 
---database ./build/my-db --results ./build/queries --query-dir ./codeql_queries
+python tree_sitter_main.py --source-root /path/to/source --languages python,cpp --output-dir build/json
 ```
 
-这样会在build/my-db下建立数据库并把查询结果存入build/queries
+这个命令直接扫描源码并输出和 Neo4j 导入脚本兼容的 `nodes.json` / `edges.json`。
 
-如果你已经有现成的 CodeQL 数据库，只想直接跑查询，可以用：
-
-```bash
-python main.py query --database ./build/my-db --results ./build/queries --query-dir ./codeql_queries
-```
-
-这个命令会跳过数据库创建，直接复用指定的数据库导出查询结果。
+需要的 Python 包包括 `tree-sitter`、`tree-sitter-python` 和 `tree-sitter-cpp`。
 
 
 
