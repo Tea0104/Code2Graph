@@ -121,6 +121,16 @@ def _parser_for(language: str) -> Parser:
     return parser
 
 
+def parser_for(language: str) -> Parser:
+    """Return the repository's configured tree-sitter parser."""
+    return _parser_for(language)
+
+
+def node_text(source: str, node) -> str:
+    """Return source text covered by a tree-sitter node."""
+    return _node_text(source, node)
+
+
 def _extensions_for(language: str) -> set[str]:
     return LANGUAGE_EXTENSIONS[language]
 
