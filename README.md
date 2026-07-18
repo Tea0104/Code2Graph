@@ -34,3 +34,20 @@ retriever使用方法：
 ```bash
 python retriever/retriever.py bolt://localhost:7687 neo4j your_password
 ```
+
+## RepoTransBench public test 定位
+
+`test_mapping` 组件用于从 Source public test 或待翻译 Source function
+检索同项目中的 Target public tests：
+
+```bash
+python -m test_mapping --help
+python -m test_mapping inspect --help
+python -m test_mapping build-index --help
+python -m test_mapping locate --help
+python -m test_mapping evaluate --help
+```
+
+安装、数据布局、UniXcoder 运行方式和指标定义见
+[`docs/test_mapping.md`](docs/test_mapping.md)，正式双向实验结果见
+[`docs/test_mapping_results.md`](docs/test_mapping_results.md)。

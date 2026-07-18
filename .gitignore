@@ -5,7 +5,10 @@ codeql_results/
 __pycache__/
 .vscode/
 venv/
+.venv-test-mapping/
 *.pyc
+test_mapping_outputs/
+test_mapping_indexes/
 QUICKSTART.md
 CHANGELOG.md
 .gitignore
