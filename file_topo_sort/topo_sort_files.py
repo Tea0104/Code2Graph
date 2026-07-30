@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import cmd
 import heapq
 import json
 import posixpath
@@ -479,6 +480,57 @@ def topological_sort(
     return sorted_order, all_cycles, broken_edges
 
 
+def build_feature_chains(
+    adjacency: dict[str, list[str]],
+    all_nodes: set[str],
+    sorted_order: list[str],
+) -> list[tuple[str, list[str]]]:
+    """Group the global translation order by entry-file dependency closures."""
+    depended_on = {
+        dep
+        for deps in adjacency.values()
+        for dep in deps
+        if dep in all_nodes
+    }
+    entries = sorted(all_nodes - depended_on)
+    if not entries:
+        return [("(all)", list(sorted_order))]
+
+    def closure(entry: str) -> set[str]:
+        result = {entry}
+        stack = [entry]
+        while stack:
+            node = stack.pop()
+            for dep in adjacency.get(node, []):
+                if dep in all_nodes and dep not in result:
+                    result.add(dep)
+                    stack.append(dep)
+        return result
+
+    closures = {entry: closure(entry) for entry in entries}
+    ordered_entries = sorted(
+        entries,
+        key=lambda entry: (-len(closures[entry]), entry),
+    )
+
+    seen: set[str] = set()
+    chains: list[tuple[str, list[str]]] = []
+    for entry in ordered_entries:
+        files = [
+            path
+            for path in sorted_order
+            if path in closures[entry] and path not in seen
+        ]
+        if files:
+            chains.append((entry, files))
+            seen.update(files)
+
+    remaining = [path for path in sorted_order if path not in seen]
+    if remaining:
+        chains.append(("(orphans)", remaining))
+    return chains
+
+
 def _edge_import_line(
     adjacency: dict[str, list[str]],
     edge_lines: dict[tuple[str, str], int],
@@ -533,6 +585,7 @@ def build_json_result(
     sorted_order: list[str],
     cycles: list[list[str]],
     broken_edges: set[tuple[str, str]],
+    chains: list[tuple[str, list[str]]],
 ) -> dict[str, object]:
     dependencies = []
     external_dependencies = []
@@ -555,6 +608,10 @@ def build_json_result(
         "source_root": str(source_root),
         "languages": languages,
         "translation_order": sorted_order,
+        "chains": [
+            {"entry": entry, "files": files}
+            for entry, files in chains
+        ],
         "dependencies": dependencies,
         "external_dependencies": external_dependencies,
         "cycles": cycles,
@@ -563,6 +620,250 @@ def build_json_result(
             for source, target in sorted(broken_edges)
         ],
     }
+
+
+def _effective_adjacency(
+    adjacency: dict[str, list[str]],
+    broken_edges: set[tuple[str, str]],
+) -> dict[str, list[str]]:
+    return {
+        node: [
+            dep for dep in deps
+            if (node, dep) not in broken_edges
+        ]
+        for node, deps in adjacency.items()
+    }
+
+
+def _compute_ready(
+    all_nodes: set[str],
+    adjacency: dict[str, list[str]],
+    translated: set[str],
+) -> list[str]:
+    ready = []
+    for node in sorted(all_nodes - translated):
+        internal_deps = [
+            dep for dep in adjacency.get(node, []) if dep in all_nodes
+        ]
+        if all(dep in translated for dep in internal_deps):
+            ready.append(node)
+    return ready
+
+
+class _TranslateShell(cmd.Cmd):
+    """Interactive translation progress tracker."""
+
+    intro = "Translation Progress Tracker. Type help for commands."
+    prompt = "\n> "
+
+    def __init__(self, state: dict[str, object], state_path: Path) -> None:
+        super().__init__()
+        self.state = state
+        self.state_path = state_path
+        self.all_nodes = set(state["all_files"])
+        self.adjacency = {
+            node: [dep for dep in deps if dep in self.all_nodes]
+            for node, deps in dict(state["adjacency"]).items()
+        }
+        self.translated = set(state["translated"])
+        self._update_ready()
+        self._print_ready(limit=10)
+
+    def _update_ready(self) -> None:
+        self.ready = _compute_ready(
+            self.all_nodes, self.adjacency, self.translated,
+        )
+
+    def _save(self) -> None:
+        self.state["translated"] = sorted(self.translated)
+        self.state["ready"] = self.ready
+        self.state_path.write_text(
+            json.dumps(self.state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _resolve_files(self, value: str) -> list[str]:
+        resolved = []
+        for query in value.split():
+            if query in self.all_nodes:
+                resolved.append(query)
+                continue
+            matches = sorted(path for path in self.all_nodes if query in path)
+            if len(matches) == 1:
+                resolved.append(matches[0])
+            elif matches:
+                print(f"'{query}' matches multiple files: {', '.join(matches)}")
+            else:
+                print(f"No file matches '{query}'.")
+        return resolved
+
+    def _print_ready(self, limit: int | None = None) -> None:
+        if not self.ready:
+            remaining = len(self.all_nodes - self.translated)
+            message = "All files are translated." if not remaining else "No files are ready."
+            print(message)
+            return
+        files = self.ready[:limit] if limit else self.ready
+        print(f"Ready ({len(self.ready)}):")
+        for path in files:
+            print(f"  {path}")
+
+    def do_ready(self, arg: str) -> None:
+        """ready [N]: show files whose dependencies are translated."""
+        try:
+            limit = int(arg) if arg.strip() else None
+        except ValueError:
+            print("Usage: ready [N]")
+            return
+        self._update_ready()
+        self._print_ready(limit)
+
+    def do_done(self, arg: str) -> None:
+        """done FILE [...]: mark files as translated."""
+        files = self._resolve_files(arg)
+        self.translated.update(files)
+        self._update_ready()
+        self._save()
+        if files:
+            print(f"Marked done: {', '.join(files)}")
+        self.do_status("")
+
+    def do_undo(self, arg: str) -> None:
+        """undo FILE [...]: remove translated marks."""
+        files = self._resolve_files(arg)
+        self.translated.difference_update(files)
+        self._update_ready()
+        self._save()
+        if files:
+            print(f"Undone: {', '.join(files)}")
+
+    def do_next(self, arg: str) -> None:
+        """next [N]: show the next files in translation order."""
+        try:
+            limit = int(arg) if arg.strip() else 10
+        except ValueError:
+            print("Usage: next [N]")
+            return
+        remaining = [
+            path for path in self.state.get("translation_order", [])
+            if path not in self.translated
+        ]
+        for path in remaining[:limit]:
+            status = "ready" if path in self.ready else "blocked"
+            print(f"  [{status}] {path}")
+
+    def do_remaining(self, arg: str) -> None:
+        """remaining [TEXT]: show untranslated files and blockers."""
+        query = arg.strip().lower()
+        files = sorted(self.all_nodes - self.translated)
+        if query:
+            files = [path for path in files if query in path.lower()]
+        for path in files:
+            blockers = [
+                dep for dep in self.adjacency.get(path, [])
+                if dep in self.all_nodes and dep not in self.translated
+            ]
+            suffix = f" <- {', '.join(blockers)}" if blockers else ""
+            print(f"  {path}{suffix}")
+
+    def do_translated(self, arg: str) -> None:
+        """translated [TEXT]: show translated files."""
+        query = arg.strip().lower()
+        files = sorted(self.translated)
+        if query:
+            files = [path for path in files if query in path.lower()]
+        for path in files:
+            print(f"  {path}")
+
+    def do_search(self, arg: str) -> None:
+        """search TEXT: search files and show progress state."""
+        query = arg.strip().lower()
+        if not query:
+            print("Usage: search TEXT")
+            return
+        for path in sorted(self.all_nodes):
+            if query not in path.lower():
+                continue
+            status = "done" if path in self.translated else (
+                "ready" if path in self.ready else "blocked"
+            )
+            print(f"  [{status}] {path}")
+
+    def do_status(self, arg: str) -> None:
+        """status: show translation progress."""
+        total = len(self.all_nodes)
+        done = len(self.translated)
+        percent = int(done * 100 / total) if total else 100
+        print(
+            f"Progress: {done}/{total} ({percent}%), "
+            f"ready={len(self.ready)}, blocked={total - done - len(self.ready)}"
+        )
+
+    def do_quit(self, arg: str) -> bool:
+        """quit: save and exit."""
+        self._save()
+        return True
+
+    def do_EOF(self, arg: str) -> bool:
+        print()
+        return self.do_quit(arg)
+
+    do_q = do_quit
+    do_ls = do_ready
+    do_d = do_done
+    do_n = do_next
+    do_r = do_remaining
+    do_t = do_translated
+    do_s = do_status
+
+
+def _run_interactive(
+    source_root: Path,
+    languages: list[str],
+    include_tests: bool,
+    state_path: Path,
+    reset: bool,
+) -> None:
+    if state_path.exists() and not reset:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        print(f"Loaded state: {state_path}")
+    else:
+        adjacency, all_nodes, edge_lines = build_dependency_graph(
+            source_root, languages, include_tests=include_tests,
+        )
+        order, cycles, broken_edges = topological_sort(
+            adjacency, all_nodes, edge_lines, languages, source_root,
+        )
+        effective = _effective_adjacency(adjacency, broken_edges)
+        chains = build_feature_chains(effective, all_nodes, order)
+        state = {
+            "source_root": str(source_root),
+            "languages": languages,
+            "all_files": sorted(all_nodes),
+            "adjacency": effective,
+            "translation_order": order,
+            "chains": [
+                {"entry": entry, "files": files}
+                for entry, files in chains
+            ],
+            "cycles": cycles,
+            "broken_edges": [
+                {"file": source, "depends_on": target}
+                for source, target in sorted(broken_edges)
+            ],
+            "translated": [],
+            "ready": _compute_ready(all_nodes, effective, set()),
+        }
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        print(f"Created state: {state_path}")
+
+    try:
+        _TranslateShell(state, state_path).cmdloop()
+    except KeyboardInterrupt:
+        print("\nExited; progress already saved.")
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +900,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="Output format. Default: text",
     )
+    parser.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="Launch the interactive translation progress tracker.",
+    )
+    parser.add_argument(
+        "--state",
+        default=None,
+        help="Interactive state file. Default: <source>/.translate_state.json",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Discard existing interactive progress and rescan the project.",
+    )
     return parser
 
 
@@ -616,6 +932,21 @@ def main() -> None:
             print(f"Error: unsupported language '{lang}'. Supported: {list(LANGUAGE_EXTENSIONS)}", file=sys.stderr)
             sys.exit(1)
 
+    if args.interactive:
+        state_path = (
+            Path(args.state).resolve()
+            if args.state
+            else source_root / ".translate_state.json"
+        )
+        _run_interactive(
+            source_root,
+            languages,
+            args.include_tests,
+            state_path,
+            args.reset,
+        )
+        return
+
     print(f"Scanning {source_root} for {', '.join(languages)} files...", file=sys.stderr)
 
     adjacency, all_nodes, edge_lines = build_dependency_graph(
@@ -625,6 +956,10 @@ def main() -> None:
     )
     sorted_order, cycles, broken_edges = topological_sort(
         adjacency, all_nodes, edge_lines, languages, source_root,
+    )
+    effective_adjacency = _effective_adjacency(adjacency, broken_edges)
+    chains = build_feature_chains(
+        effective_adjacency, all_nodes, sorted_order,
     )
 
     if args.format == "json":
@@ -637,6 +972,7 @@ def main() -> None:
             sorted_order,
             cycles,
             broken_edges,
+            chains,
         )
         output = json.dumps(result, ensure_ascii=False, indent=2)
     else:
