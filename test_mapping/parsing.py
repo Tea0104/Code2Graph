@@ -19,7 +19,20 @@ CPP_CALL_EXCLUDES = {
     "EXPECT_EQ", "EXPECT_NE", "EXPECT_TRUE", "EXPECT_FALSE", "EXPECT_THROW", "EXPECT_NO_THROW",
     "ASSERT_EQ", "ASSERT_NE", "ASSERT_TRUE", "ASSERT_FALSE", "ASSERT_THROW", "ASSERT_NO_THROW",
     "REQUIRE", "CHECK", "SECTION", "GIVEN", "WHEN", "THEN", "AND_THEN",
-    "BOOST_AUTO_TEST_CASE",
+    "BOOST_AUTO_TEST_CASE", "assert",
+    "if", "for", "while", "switch", "catch", "return", "throw", "sizeof",
+    "static_cast", "reinterpret_cast", "dynamic_cast", "const_cast",
+}
+JAVA_TEST_ANNOTATIONS = {
+    "Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate",
+}
+JAVA_CALL_EXCLUDES = {
+    "if", "for", "while", "switch", "catch", "try", "synchronized", "return", "throw",
+    "new", "this", "super",
+    "assertEquals", "assertNotEquals", "assertSame", "assertNotSame", "assertTrue",
+    "assertFalse", "assertNull", "assertNotNull", "assertThrows", "assertDoesNotThrow",
+    "assertArrayEquals", "assertIterableEquals", "assertLinesMatch", "assertAll",
+    "assertThat", "fail", "verify", "when", "thenReturn", "thenThrow",
 }
 
 
@@ -73,6 +86,51 @@ def _python_function_nodes(root) -> list:
     return [node for node in _walk(root) if node.type == "function_definition"]
 
 
+def _python_name(node, source: str) -> str | None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return None
+    name = node_text(source, name_node).strip()
+    return name or None
+
+
+def _walk_direct_scope(node, nested_types: set[str]) -> Iterator:
+    yield node
+    for child in node.named_children:
+        if child.type in nested_types:
+            continue
+        yield from _walk_direct_scope(child, nested_types)
+
+
+def _python_direct_calls_from_node(node, source: str) -> list[str]:
+    nested_types = {"function_definition", "class_definition", "lambda"}
+    values = {
+        value
+        for child in _walk_direct_scope(node, nested_types)
+        if child.type == "call"
+        if (value := _python_callee(child, source))
+    }
+    return sorted(values)
+
+
+def _python_direct_calls(source: str) -> list[str]:
+    tree = parser_for("python").parse(source.encode("utf-8"))
+    root = tree.root_node
+    functions = _python_function_nodes(root)
+    test_functions = [node for node in functions if (_python_name(node, source) or "").startswith("test_")]
+    scopes = test_functions or (functions if len(functions) == 1 else [])
+    if scopes:
+        values = {call for node in scopes for call in _python_direct_calls_from_node(node, source)}
+        return sorted(values)
+    values = {
+        value
+        for child in _walk(root)
+        if child.type == "call"
+        if (value := _python_callee(child, source))
+    }
+    return sorted(values)
+
+
 def _python_parameters(node, source: str) -> list[str]:
     parameters = node.child_by_field_name("parameters")
     if parameters is None:
@@ -95,14 +153,13 @@ def extract_python_functions(path: Path, project_root: Path, project: str) -> li
     result: list[FunctionChunk] = []
     relative = _relative(path, project_root)
     for node in _python_function_nodes(tree.root_node):
-        name_node = node.child_by_field_name("name")
-        if name_node is None:
+        name = _python_name(node, source)
+        if name is None:
             continue
-        name = node_text(source, name_node).strip()
         if name.startswith("test_"):
             continue
         parent = _python_parent_class(node, source)
-        calls = sorted({value for child in _walk(node) if child.type == "call" if (value := _python_callee(child, source))})
+        calls = _python_direct_calls_from_node(node, source)
         qualified = _qualified(parent, name)
         result.append(FunctionChunk(
             chunk_id=f"{project}:Python:{relative}:{qualified}:{node.start_point.row + 1}",
@@ -130,10 +187,9 @@ def extract_python_tests(path: Path, project_root: Path, project: str) -> list[T
     helper_by_name = {}
     fixture_names: set[str] = set()
     for node in functions:
-        name_node = node.child_by_field_name("name")
-        if name_node is None:
+        name = _python_name(node, source)
+        if name is None:
             continue
-        name = node_text(source, name_node).strip()
         if not name.startswith("test_"):
             helper_by_name[name] = node_text(source, node)
             if _python_is_fixture(node, source):
@@ -141,14 +197,13 @@ def extract_python_tests(path: Path, project_root: Path, project: str) -> list[T
 
     result: list[TestChunk] = []
     for node in functions:
-        name_node = node.child_by_field_name("name")
-        if name_node is None:
+        name = _python_name(node, source)
+        if name is None:
             continue
-        name = node_text(source, name_node).strip()
         if not name.startswith("test_"):
             continue
         parent = _python_parent_class(node, source)
-        calls = sorted({value for child in _walk(node) if child.type == "call" if (value := _python_callee(child, source))})
+        calls = _python_direct_calls_from_node(node, source)
         parameters = _python_parameters(node, source)
         context_names = set(calls) | (set(parameters) & fixture_names)
         if parent:
@@ -279,6 +334,127 @@ def _cpp_calls(code: str) -> list[str]:
         for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_:]*)\s*\(", code)
     }
     return sorted(value for value in values if value not in CPP_CALL_EXCLUDES)
+
+
+def _cpp_direct_calls(source: str) -> list[str]:
+    snippets = [source[match.start:match.end] for match in _cpp_macros(source)]
+    if not snippets:
+        try:
+            tree = parser_for("cpp").parse(source.encode("utf-8"))
+            for node in _walk(tree.root_node):
+                if node.type != "function_definition":
+                    continue
+                declarator_node = node.child_by_field_name("declarator")
+                declarator = node_text(source, declarator_node) if declarator_node is not None else ""
+                name = _cpp_function_name(declarator)
+                if name and ("test" in name.lower() or name == "main"):
+                    snippets.append(node_text(source, node))
+        except Exception:
+            snippets = []
+    if not snippets:
+        snippets = [source]
+    return sorted({call for snippet in snippets for call in _cpp_calls(snippet)})
+
+
+def _strip_java_comments_and_literals(source: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            if end == -1:
+                break
+            result.append("\n")
+            index = end + 1
+        elif source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            comment = source[index:] if end == -1 else source[index:end + 2]
+            result.append("\n" * comment.count("\n"))
+            index = len(source) if end == -1 else end + 2
+        elif source[index] in {'"', "'"}:
+            quote = source[index]
+            index += 1
+            escaped = False
+            while index < len(source):
+                char = source[index]
+                if char == "\n":
+                    result.append("\n")
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    index += 1
+                    break
+                index += 1
+            result.append(" ")
+        else:
+            result.append(source[index])
+            index += 1
+    return "".join(result)
+
+
+def _java_test_method_bodies(source: str) -> list[str]:
+    annotations = "|".join(sorted(JAVA_TEST_ANNOTATIONS, key=len, reverse=True))
+    pattern = re.compile(rf"@\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*({annotations})\b(?:\s*\([^)]*\))?")
+    bodies: list[str] = []
+    for match in pattern.finditer(source):
+        body_start = source.find("{", match.end())
+        if body_start == -1:
+            continue
+        body_end = _balanced_end(source, body_start, "{", "}")
+        if body_end is not None:
+            bodies.append(source[body_start + 1:body_end - 1])
+    return bodies
+
+
+def _java_plain_test_method_bodies(source: str) -> list[str]:
+    pattern = re.compile(
+        r"\b(?:public|protected|private|static|final|synchronized|void|[A-Za-z_$][A-Za-z0-9_$<>\[\], ?]*)"
+        r"\s+(test[A-Za-z0-9_$]*)\s*\([^;{}]*\)\s*(?:throws\s+[^{]+)?\{"
+    )
+    bodies: list[str] = []
+    for match in pattern.finditer(source):
+        body_start = match.end() - 1
+        body_end = _balanced_end(source, body_start, "{", "}")
+        if body_end is not None:
+            bodies.append(source[body_start + 1:body_end - 1])
+    return bodies
+
+
+def _java_direct_calls(source: str) -> list[str]:
+    snippets = _java_test_method_bodies(source) or _java_plain_test_method_bodies(source) or [source]
+    calls: set[str] = set()
+    for snippet in snippets:
+        cleaned = _strip_java_comments_and_literals(snippet)
+        for match in re.finditer(r"(?<![A-Za-z0-9_$])([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^(){};]*>)?\s*\(", cleaned):
+            name = match.group(1)
+            if name not in JAVA_CALL_EXCLUDES:
+                calls.add(name)
+    return sorted(calls)
+
+
+def _normalized_language(language: str) -> str:
+    value = language.strip().lower().replace("_", "-")
+    if value in {"python", "py"}:
+        return "Python"
+    if value in {"c++", "cpp", "cxx", "cc"}:
+        return "C++"
+    if value == "java":
+        return "Java"
+    raise ValueError(f"Unsupported language: {language}")
+
+
+def extract_direct_calls(code: str, language: str) -> list[str]:
+    """Return callee names directly invoked by a test-case snippet."""
+    normalized = _normalized_language(language)
+    if normalized == "Python":
+        return _python_direct_calls(code)
+    if normalized == "C++":
+        return _cpp_direct_calls(code)
+    if normalized == "Java":
+        return _java_direct_calls(code)
+    raise ValueError(f"Unsupported language: {language}")
 
 
 def _cpp_includes(source: str) -> list[str]:
