@@ -5,14 +5,16 @@ import json
 from pathlib import Path
 import sys
 
-from .alignment import align_tests
 from .dataset import PairLayout
-from .embedding import make_embedder
-from .evaluation import evaluate, evaluate_functions
-from .index import VectorIndex
 from .models import LanguagePair
-from .pipeline import TestLocator
-from .repository import load_project, load_target_corpus
+from .source_function_gold import load_source_function_gold
+from .source_function_mapping import (
+    build_source_function_mapping_records,
+    evaluate_source_function_mapping,
+    load_source_function_mapping,
+    query_source_function_mapping,
+    write_source_function_mapping,
+)
 
 
 def _json(value, path: Path | None = None) -> None:
@@ -27,147 +29,135 @@ def _layout(args) -> PairLayout:
     return PairLayout.detect(Path(args.dataset_root), LanguagePair.parse(args.pair))
 
 
-def _embedder(args):
-    return make_embedder(args.embedder, model_path=args.model_path, device=args.device, batch_size=args.batch_size)
-
-
-def command_inspect(args) -> int:
+def command_build_source_function_map(args) -> int:
     layout = _layout(args)
-    selected = [args.project] if args.project else [item.project for item in layout.projects()]
-    rows = []
-    for project in selected:
-        data = load_project(layout, project)
-        alignments = align_tests(data.source_tests, data.target_tests, expanded=True)
-        confidence_counts = {
-            confidence: sum(item.confidence == confidence for item in alignments)
-            for confidence in ("high", "medium", "low", "ambiguous")
-        }
-        rows.append({
-            "project": project,
-            "source_functions": len(data.source_functions),
-            "source_test_chunks": len(data.source_tests),
-            "target_test_chunks": len(data.target_tests),
-            "alignment_counts": confidence_counts,
-            "errors": data.errors,
-        })
-    _json({"layout": layout.layout, "pair": layout.pair.name, "project_count": len(rows), "projects": rows}, Path(args.output) if args.output else None)
+    records, report = build_source_function_mapping_records(
+        layout,
+        projects=[args.project] if args.project else None,
+        method=args.method,
+        test_scope=args.test_scope,
+        project_limit=args.project_limit,
+        limit_per_project=args.limit_per_project,
+    )
+    output = Path(args.output)
+    write_source_function_mapping(records, output)
+    report["output"] = str(output)
+    _json(report, Path(args.report) if args.report else None)
     return 0
 
 
-def command_build_index(args) -> int:
-    layout = _layout(args)
-    chunks, reports = load_target_corpus(layout, [args.project] if args.project else None)
-    if not chunks:
-        raise RuntimeError("No target public test chunks were extracted")
-    embedder = _embedder(args)
-    index = VectorIndex.build(chunks, embedder, backend=args.index_backend)
-    output = Path(args.output_dir)
-    index.save(output)
-    _json({"index": str(output.resolve()), "embedder": embedder.name, "chunks": len(chunks), "projects": reports}, output / "build_report.json")
-    return 0
-
-
-def command_locate(args) -> int:
-    layout = _layout(args)
-    data = load_project(layout, args.project)
-    embedder = _embedder(args)
-    locator = TestLocator(VectorIndex.load(Path(args.index_dir)), embedder, confidence_threshold=args.confidence_threshold, margin_threshold=args.margin_threshold)
-    if args.source_test:
-        matches = [chunk for chunk in data.source_tests if args.source_test in {chunk.chunk_id, chunk.name, chunk.qualified_name}]
-        if not matches:
-            available = ", ".join(chunk.qualified_name for chunk in data.source_tests)
-            raise ValueError(f"Source test not found: {args.source_test}. Available: {available}")
-        if len(matches) > 1:
-            choices = ", ".join(chunk.chunk_id for chunk in matches)
-            raise ValueError(f"Ambiguous source test; use a chunk id: {choices}")
-        payload = locator.locate(matches[0], data.source_functions, strategy=args.strategy, k=args.top_k).to_dict()
-    else:
-        matches = [chunk for chunk in data.source_functions if args.source_function in {chunk.chunk_id, chunk.name, chunk.qualified_name}]
-        if not matches:
-            available = ", ".join(chunk.qualified_name for chunk in data.source_functions[:50])
-            raise ValueError(f"Source function not found: {args.source_function}. First available: {available}")
-        if len(matches) > 1:
-            choices = ", ".join(chunk.chunk_id for chunk in matches)
-            raise ValueError(f"Ambiguous source function; use a qualified name or chunk id: {choices}")
-        payload = locator.locate_function_with_tests(matches[0], data.source_tests, strategy=args.strategy, k=args.top_k).to_dict()
+def command_query_source_function_map(args) -> int:
+    records = load_source_function_mapping(args.mapping)
+    matches = query_source_function_mapping(
+        records,
+        args.source_test,
+        project=args.project,
+    )
+    if not matches:
+        raise ValueError(f"Source test not found in mapping table: {args.source_test}")
+    if len(matches) > 1 and not args.allow_many:
+        choices = ", ".join(
+            f"{record.project}:{record.source_test_nodeid}" for record in matches
+        )
+        raise ValueError(f"Ambiguous source test; pass --project or --allow-many: {choices}")
+    payload = {
+        "mapping": args.mapping,
+        "source_test": args.source_test,
+        "match_count": len(matches),
+        "results": [record.to_dict() for record in matches],
+    }
     _json(payload, Path(args.output) if args.output else None)
     return 0
 
 
-def command_evaluate(args) -> int:
-    layout = _layout(args)
-    embedder = _embedder(args)
-    locator = TestLocator(VectorIndex.load(Path(args.index_dir)), embedder, confidence_threshold=args.confidence_threshold, margin_threshold=args.margin_threshold)
-    projects = [args.project] if args.project else None
-    if args.query_unit == "function":
-        summary, rows = evaluate_functions(layout, locator, projects=projects, strategy=args.strategy)
-    else:
-        summary, rows = evaluate(layout, locator, strategy=args.strategy, projects=projects)
+def command_evaluate_source_function_map(args) -> int:
+    mapping_records = load_source_function_mapping(args.mapping)
+    gold_records = load_source_function_gold(args.gold)
+    summary, rows = evaluate_source_function_mapping(
+        mapping_records=mapping_records,
+        gold_records=gold_records,
+        mapping_path=args.mapping,
+        gold_path=args.gold,
+        project=args.project,
+    )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     _json(summary.to_dict(), output / "metrics.json")
-    (output / "results.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    (output / "results.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
     return 0
 
 
 def _common_dataset(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dataset-root", required=True)
-    parser.add_argument("--pair", required=True, help="For example: Python_to_C++")
-
-
-def _common_embedder(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--embedder", choices=("hashing", "unixcoder"), default="hashing")
-    parser.add_argument("--model-path")
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--batch-size", type=int, default=16)
-
-
-def _common_locator(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--strategy", choices=("test", "function", "function_test", "adaptive", "fusion"), default="adaptive")
-    parser.add_argument("--confidence-threshold", type=float, default=0.55)
-    parser.add_argument("--margin-threshold", type=float, default=0.03)
+    parser.add_argument("--pair", default="C++_to_Python")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m test_mapping", description="Locate translated public tests with structure-aware RAG")
+    parser = argparse.ArgumentParser(
+        prog="python -m test_mapping",
+        description="Build and query Source-test -> Source-function mapping tables",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    inspect_parser = sub.add_parser("inspect", help="Inspect parser and alignment coverage")
-    _common_dataset(inspect_parser)
-    inspect_parser.add_argument("--project")
-    inspect_parser.add_argument("--output")
-    inspect_parser.set_defaults(handler=command_inspect)
+    build_sf_map = sub.add_parser(
+        "build-source-function-map",
+        help="Build a static Source-test to Source-function mapping table",
+    )
+    _common_dataset(build_sf_map)
+    build_sf_map.add_argument("--project")
+    build_sf_map.add_argument("--project-limit", type=int)
+    build_sf_map.add_argument("--limit-per-project", type=int)
+    build_sf_map.add_argument(
+        "--method",
+        choices=(
+            "static",
+            "verified_static",
+            "verified_static_with_medium",
+            "verified_static_with_low",
+            "recall_static",
+        ),
+        default="verified_static",
+        help=(
+            "static keeps all resolved direct calls; verified_static filters/ranks "
+            "directly verified business APIs; verified_static_with_medium also "
+            "adds tagged medium-confidence helper-expanded candidates; "
+            "verified_static_with_low additionally emits weak low-confidence candidates; "
+            "recall_static builds a recall-first table with low candidates and unresolved rows"
+        ),
+    )
+    build_sf_map.add_argument(
+        "--test-scope",
+        choices=("public", "all"),
+        default="all",
+        help="public scans public tests only; all scans public, original, and internal test-like files",
+    )
+    build_sf_map.add_argument("--output", required=True)
+    build_sf_map.add_argument("--report")
+    build_sf_map.set_defaults(handler=command_build_source_function_map)
 
-    build = sub.add_parser("build-index", help="Build a persistent target-test vector index")
-    _common_dataset(build)
-    _common_embedder(build)
-    build.add_argument("--project")
-    build.add_argument("--output-dir", required=True)
-    build.add_argument("--index-backend", choices=("numpy", "faiss", "auto"), default="numpy")
-    build.set_defaults(handler=command_build_index)
+    query_sf_map = sub.add_parser(
+        "query-source-function-map",
+        help="Query a generated Source-test to Source-function mapping table",
+    )
+    query_sf_map.add_argument("--mapping", required=True)
+    query_sf_map.add_argument("--source-test", required=True)
+    query_sf_map.add_argument("--project")
+    query_sf_map.add_argument("--allow-many", action="store_true")
+    query_sf_map.add_argument("--output")
+    query_sf_map.set_defaults(handler=command_query_source_function_map)
 
-    locate = sub.add_parser("locate", help="Locate target tests for one source test")
-    _common_dataset(locate)
-    _common_embedder(locate)
-    _common_locator(locate)
-    locate.add_argument("--index-dir", required=True)
-    locate.add_argument("--project", required=True)
-    source_query = locate.add_mutually_exclusive_group(required=True)
-    source_query.add_argument("--source-test")
-    source_query.add_argument("--source-function")
-    locate.add_argument("--top-k", type=int, default=5)
-    locate.add_argument("--output")
-    locate.set_defaults(handler=command_locate)
-
-    evaluation = sub.add_parser("evaluate", help="Evaluate strict name-aligned queries")
-    _common_dataset(evaluation)
-    _common_embedder(evaluation)
-    _common_locator(evaluation)
-    evaluation.add_argument("--index-dir", required=True)
-    evaluation.add_argument("--project")
-    evaluation.add_argument("--query-unit", choices=("test", "function"), default="test")
-    evaluation.add_argument("--output-dir", required=True)
-    evaluation.set_defaults(handler=command_evaluate)
+    eval_sf_map = sub.add_parser(
+        "evaluate-source-function-map",
+        help="Evaluate a generated mapping table against reviewed source-function gold",
+    )
+    eval_sf_map.add_argument("--mapping", required=True)
+    eval_sf_map.add_argument("--gold", required=True)
+    eval_sf_map.add_argument("--project")
+    eval_sf_map.add_argument("--output-dir", required=True)
+    eval_sf_map.set_defaults(handler=command_evaluate_source_function_map)
     return parser
 
 
@@ -175,6 +165,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, KeyError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
