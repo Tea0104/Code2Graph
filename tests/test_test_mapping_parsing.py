@@ -3,7 +3,7 @@ import tempfile
 import textwrap
 import unittest
 
-from test_mapping.parsing import extract_functions, extract_tests
+from test_mapping.parsing import extract_direct_calls, extract_functions, extract_tests
 
 
 class ParsingTest(unittest.TestCase):
@@ -94,6 +94,37 @@ class ParsingTest(unittest.TestCase):
                 [chunk.name for chunk in extract_tests(plain, root, "demo", "C++")],
                 ["test_add", "main"],
             )
+
+    def test_extract_direct_calls_for_python_cpp_and_java(self):
+        python_code = """
+            def test_outer():
+                def local_helper():
+                    indirect()
+                local_helper()
+                direct_call()
+        """
+        self.assertEqual(extract_direct_calls(textwrap.dedent(python_code), "Python"), ["direct_call", "local_helper"])
+
+        cpp_code = r'''
+            int helper() { return indirect(); }
+            TEST(Demo, Adds) { EXPECT_EQ(add(helper()), 3); }
+        '''
+        self.assertEqual(extract_direct_calls(textwrap.dedent(cpp_code), "C++"), ["add", "helper"])
+
+        java_code = """
+            class DemoTest {
+                @Test
+                void adds() {
+                    assertEquals(3, add(1, 2));
+                    helper();
+                }
+
+                void helper() {
+                    indirect();
+                }
+            }
+        """
+        self.assertEqual(extract_direct_calls(textwrap.dedent(java_code), "Java"), ["add", "helper"])
 
 
 if __name__ == "__main__":

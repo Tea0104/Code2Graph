@@ -37,6 +37,25 @@ class PairLayout:
     @classmethod
     def detect(cls, root: Path, pair: LanguagePair) -> "PairLayout":
         root = root.resolve()
+
+        organized_name = f"{pair.name}_organized"
+        organized_candidates = [
+            root / organized_name,
+            root / root.name / organized_name,
+        ]
+        if root.name == organized_name:
+            organized_candidates.insert(0, root)
+        for pair_root in organized_candidates:
+            if not pair_root.is_dir():
+                continue
+            project_dirs = [path for path in pair_root.iterdir() if path.is_dir()]
+            if any(
+                (path / "source_project").is_dir()
+                or (path / "target_project").is_dir()
+                for path in project_dirs
+            ):
+                return cls(root, pair, pair_root, pair_root, "organized_projects")
+
         team_pair = root / pair.name
         if (team_pair / "source_projects").is_dir() and (team_pair / "target_projects").is_dir():
             return cls(root, pair, team_pair / "source_projects", team_pair / "target_projects", "team_subset")
@@ -54,11 +73,26 @@ class PairLayout:
         raise FileNotFoundError(f"Cannot detect dataset layout under {root} for {pair.name}")
 
     def projects(self) -> list[ProjectPaths]:
+        if self.layout == "organized_projects":
+            return [
+                self.project(path.name)
+                for path in sorted(self.source_root.iterdir(), key=lambda item: item.name)
+                if path.is_dir() and not path.name.startswith("__")
+            ]
         source = {path.name: path for path in self.source_root.iterdir() if path.is_dir()}
         target = {path.name: path for path in self.target_root.iterdir() if path.is_dir()}
         return [ProjectPaths(name, source.get(name), target.get(name)) for name in sorted(source.keys() | target.keys())]
 
     def project(self, name: str) -> ProjectPaths:
+        if self.layout == "organized_projects":
+            project_root = self.source_root / name
+            source = project_root / "source_project"
+            target = project_root / "target_project"
+            return ProjectPaths(
+                name,
+                source if source.is_dir() else None,
+                target if target.is_dir() else None,
+            )
         source = self.source_root / name
         target = self.target_root / name
         return ProjectPaths(name, source if source.is_dir() else None, target if target.is_dir() else None)
