@@ -130,9 +130,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build_sf_map.add_argument(
         "--test-scope",
-        choices=("public", "all"),
+        choices=("public", "all", "gtest"),
         default="all",
-        help="public scans public tests only; all scans public, original, and internal test-like files",
+        help=(
+            "public scans public tests only; all scans public, original, and internal "
+            "test-like files; gtest scans all test-like files but keeps only TEST, "
+            "TEST_F, TEST_P, TYPED_TEST, and TYPED_TEST_P"
+        ),
     )
     build_sf_map.add_argument("--output", required=True)
     build_sf_map.add_argument("--report")

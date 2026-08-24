@@ -31,11 +31,12 @@ SourceFunctionMappingMethod = Literal[
     "recall_static",
 ]
 SourceFunctionMappingStatus = Literal["matched", "candidate", "unresolved", "no_match"]
-SourceFunctionTestScope = Literal["public", "all"]
+SourceFunctionTestScope = Literal["public", "all", "gtest"]
 SourceFunctionHitConfidence = Literal["high", "medium", "low"]
 DEFAULT_SOURCE_FUNCTION_MAPPING_PATH = Path(
     "outputs/source-function-map/cpp_to_python_verified_static_all_tests.jsonl"
 )
+GTEST_FRAMEWORKS = frozenset({"TEST", "TEST_F", "TEST_P", "TYPED_TEST", "TYPED_TEST_P"})
 
 
 @dataclass(frozen=True)
@@ -629,7 +630,7 @@ def _load_source_tests_for_scope(
 
     if scope == "public":
         files = public_test_files(source_dir, language)
-    elif scope == "all":
+    elif scope in {"all", "gtest"}:
         files = [
             path
             for path in iter_language_files(source_dir, language, include_tests=True)
@@ -644,6 +645,8 @@ def _load_source_tests_for_scope(
     for path in files:
         try:
             for test in extract_tests(path, source_dir, project, language):
+                if scope == "gtest" and test.framework not in GTEST_FRAMEWORKS:
+                    continue
                 if test.chunk_id in seen:
                     continue
                 tests.append(test)
