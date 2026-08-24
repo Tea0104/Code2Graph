@@ -247,7 +247,9 @@ def _assigned_variables(lines: list[str], call: str) -> set[str]:
     if not base:
         return variables
     pattern = re.compile(
-        rf"(?:^\s*|[;{{]\s*)(?:[A-Za-z_][A-Za-z0-9_:<>,\s]*\s+)?(?:[*&]\s*)?"
+        rf"(?:^\s*|[;{{]\s*)"
+        rf"(?:[A-Za-z_][A-Za-z0-9_:<>,\s]*(?:\s*[*&])*\s+)?"
+        rf"(?:[*&]\s*)?"
         rf"(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*"
         rf"(?<![A-Za-z0-9_~]){base}\s*(?:<[^;{{}}]*>)?\s*\("
     )
