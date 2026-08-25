@@ -40,8 +40,9 @@ repository_analysis/  公共语言、仓库扫描、Tree-sitter 与文件依赖�
 file_topo_sort/       拓扑排序、循环处理与功能链
 test_mapping/         Chunk、向量索引、RAG 与静态函数映射
 tree_sitter_graph/    Python/C++ 完整代码图提取
+dynamic_test_mapping/ 可选的 coverage 动态映射实验组件
 tests/                正式主流程测试
-docs/                 API、组件与归档说明
+docs/                 正式 API 与组件职责说明
 ```
 
 ## 安装
@@ -91,7 +92,8 @@ plan = get_translation_order(
 print(plan["translation_order"])
 ```
 
-### 3. Target test 定位 Source code
+### 3. 获取下一批翻译文件
+
 如果 Agent 已经翻译了部分文件，可以让系统规划下一批完整功能链：
 
 ```python
@@ -109,6 +111,8 @@ print(plan["verification_tests"])
 
 请求数量是最低数量。如果只翻译指定数量不能形成完整功能链，系统会自动扩展并在
 expanded 和 reasons 中说明原因。
+
+### 4. Target test 定位 Source code
 
 ```python
 from code2graph import Code2GraphPipeline
@@ -137,13 +141,14 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s file_topo_sort/tests -v
 ```
 
-详细接口见 [`docs/pipeline_api.md`](docs/pipeline_api.md)，组件文件职责见
-[`docs/components.md`](docs/components.md)。历史实验和旧版
-Neo4j/CodeQL 流程的恢复方式见 [`docs/archive.md`](docs/archive.md)。
+`docs/` 只保留面向使用者的正式文档：
+
+- [`docs/pipeline_api.md`](docs/pipeline_api.md)：公开接口、参数和返回值；
+- [`docs/components.md`](docs/components.md)：正式组件及其职责。
 
 ## 当前边界
 
 - Source function/test Chunk 的完整提取目前重点支持 Python 和 C++；
 - 文件级翻译顺序支持 Python、C/C++、Java、JavaScript 和 C#；
 - “请求 N 个文件并自动扩展为测试闭环批次”的接口已经实现，仍待主程序接入；
-- coverage 动态映射保存在归档分支，不属于默认 Pipeline。
+- dynamic_test_mapping 保留为独立实验组件，但不属于默认 Pipeline。
