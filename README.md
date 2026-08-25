@@ -141,8 +141,6 @@ python -m unittest discover -s file_topo_sort/tests -v
 [`docs/components.md`](docs/components.md)。历史实验和旧版
 Neo4j/CodeQL 流程的恢复方式见 [`docs/archive.md`](docs/archive.md)。
 
-RepoTransBench 接入所需的调用参数、返回格式和推荐调用位置见 [RepoTransBench 对接交接说明](docs/repo_transbench_handoff.md)。
-
 ## 当前边界
 
 - Source function/test Chunk 的完整提取目前重点支持 Python 和 C++；
