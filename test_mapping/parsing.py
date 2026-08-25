@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import re
+import textwrap
 from typing import Iterable, Iterator
 
 from tree_sitter_graph.extractor import node_text, parser_for
@@ -477,6 +479,117 @@ def extract_direct_calls(code: str, language: str) -> list[str]:
     if normalized == "Java":
         return _java_direct_calls(code)
     raise ValueError(f"Unsupported language: {language}")
+def extract_calls_from_code(code: str, language: str) -> list[str]:
+    if language == "Python":
+        source = textwrap.dedent(code)
+        tree = parser_for("python").parse(source.encode("utf-8"))
+        return sorted({
+            value
+            for node in _walk(tree.root_node)
+            if node.type == "call"
+            if (value := _python_callee(node, source))
+        })
+    if language == "C++":
+        return _cpp_calls(code)
+    raise ValueError(f"Unsupported language: {language}")
+
+
+def build_test_chunk_from_code(
+    *,
+    project: str,
+    language: str,
+    code: str,
+    name: str | None = None,
+    file: str | None = None,
+) -> TestChunk:
+    normalized_code = textwrap.dedent(code).strip()
+    if not project.strip():
+        raise ValueError("project must not be empty")
+    if not normalized_code:
+        raise ValueError("target test code must not be empty")
+
+    inferred_name = "<anonymous_target_test>"
+    inferred_qualified = inferred_name
+    parent: str | None = None
+    fixture: str | None = None
+    imports: list[str] = []
+    framework = "inline"
+    start_line = 1
+    end_line = max(1, normalized_code.count("\n") + 1)
+
+    if language == "Python":
+        tree = parser_for("python").parse(normalized_code.encode("utf-8"))
+        root = tree.root_node
+        imports = _python_imports(root, normalized_code)
+        functions = _python_function_nodes(root)
+        selected = next(
+            (
+                node
+                for node in functions
+                if (
+                    name_node := node.child_by_field_name("name")
+                ) is not None
+                and node_text(normalized_code, name_node).strip().startswith("test_")
+            ),
+            functions[0] if functions else None,
+        )
+        if selected is not None:
+            name_node = selected.child_by_field_name("name")
+            if name_node is not None:
+                inferred_name = node_text(normalized_code, name_node).strip()
+                parent = _python_parent_class(selected, normalized_code)
+                inferred_qualified = _qualified(parent, inferred_name)
+                start_line = selected.start_point.row + 1
+                end_line = selected.end_point.row + 1
+        fixture = parent
+        framework = "pytest_or_unittest"
+    elif language == "C++":
+        imports = _cpp_includes(normalized_code)
+        match = next(_cpp_macros(normalized_code), None)
+        if match is not None:
+            inferred_name, fixture, inferred_qualified = _cpp_name(match)
+            start_line = _line(normalized_code, match.start)
+            end_line = _line(normalized_code, match.end)
+            framework = match.macro
+    else:
+        raise ValueError(f"Unsupported language: {language}")
+
+    qualified_name = name.strip() if name and name.strip() else inferred_qualified
+    short_name = qualified_name.rsplit(".", 1)[-1]
+    if "." in qualified_name:
+        parent = qualified_name.rsplit(".", 1)[0]
+    extension = "py" if language == "Python" else "cpp"
+    selected_file = file.strip() if file and file.strip() else f"<inline_target_test>.{extension}"
+    calls = extract_calls_from_code(normalized_code, language)
+    chunk_text = (
+        f"Project: {project}\n"
+        f"File: {selected_file}\n"
+        f"Test: {qualified_name}\n"
+        f"Calls: {', '.join(calls)}\n"
+        f"Code:\n{normalized_code}"
+    )
+    digest = hashlib.sha256(normalized_code.encode("utf-8")).hexdigest()[:16]
+    return TestChunk(
+        chunk_id=(
+            f"inline:{project}:{language}:{selected_file}:"
+            f"{qualified_name}:{digest}"
+        ),
+        project=project,
+        language=language,
+        file=selected_file,
+        name=short_name,
+        qualified_name=qualified_name,
+        code=normalized_code,
+        chunk_text=chunk_text,
+        start_line=start_line,
+        end_line=end_line,
+        framework=framework,
+        parent=parent,
+        fixture=fixture,
+        imports=imports,
+        calls=calls,
+        metadata={"inline_query": True},
+    )
 
 
 def _cpp_includes(source: str) -> list[str]:

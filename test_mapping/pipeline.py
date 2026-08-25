@@ -13,6 +13,10 @@ BASE_STRATEGIES = ("function_test", "test", "function")
 
 class TestLocator:
     def __init__(self, index: VectorIndex, embedder: Embedder, *, confidence_threshold: float = 0.55, margin_threshold: float = 0.03) -> None:
+        if index.chunk_type != "test":
+            raise ValueError(
+                f"TestLocator requires a test index, got {index.chunk_type}"
+            )
         self.index = index
         self.embedder = embedder
         self.confidence_threshold = confidence_threshold

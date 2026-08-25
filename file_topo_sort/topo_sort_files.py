@@ -22,279 +22,16 @@ import posixpath
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# 语言扩展名映射
-# ---------------------------------------------------------------------------
-LANGUAGE_EXTENSIONS: dict[str, set[str]] = {
-    "python": {".py"},
-    "cpp": {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"},
-}
+from repository_analysis.dependencies import ImportExtractor, build_file_dependency_graph
+from repository_analysis.dependencies import line_of as _line_of
+from repository_analysis.repository import is_test_path
+from repository_analysis.languages import normalize_languages
 
-SKIP_DIR_NAMES = {
-    ".git", "__pycache__", ".venv", "venv", ".tox", ".nox", ".pytest_cache",
-    ".mypy_cache", ".ruff_cache", "site-packages", "node_modules", "build", "dist",
-    "test", "tests", "public_test", "public_tests", "spec", "specs",
-}
-
-
-# ---------------------------------------------------------------------------
-# 依赖提取（优先 tree-sitter，回退到正则）
-# ---------------------------------------------------------------------------
-
-def _looks_like_test_file(path: Path) -> bool:
-    stem = path.stem.lower()
-    return (
-        stem.startswith(("test_", "public_test_"))
-        or stem.endswith(("_test", "_tests", "_spec"))
-        or "_public_test" in stem
-    )
-
-
-def _should_skip(path: Path, include_tests: bool = False) -> bool:
-    parts = {part.lower() for part in path.parts}
-    skipped_dirs = SKIP_DIR_NAMES
-    if include_tests:
-        skipped_dirs = skipped_dirs - {
-            "test", "tests", "public_test", "public_tests", "spec", "specs",
-        }
-    if parts & skipped_dirs:
-        return True
-    if any(part.lower().endswith(".egg-info") for part in path.parts):
-        return True
-    return not include_tests and _looks_like_test_file(path)
-
-
-class DependencyExtractor:
-    """从源文件中提取它依赖的其他文件（模块）。"""
-
-    def __init__(self, source_root: Path, language: str) -> None:
-        self.source_root = source_root
-        self.language = language
-        self._try_tree_sitter = True
-
-    def extract_imports(self, file_path: Path) -> list[tuple[str, int]]:
-        """返回该文件中所有 import/include 的 (文本, 行号) 列表。"""
-        if self._try_tree_sitter:
-            try:
-                return self._extract_with_tree_sitter(file_path)
-            except (ImportError, ModuleNotFoundError):
-                self._try_tree_sitter = False
-                print(
-                    f"Warning: tree-sitter unavailable, using fallback parser for {self.language} files.",
-                    file=sys.stderr,
-                )
-            except Exception as exc:
-                print(
-                    f"Warning: tree-sitter failed for {file_path}: {exc}; using fallback parser.",
-                    file=sys.stderr,
-                )
-        return self._extract_without_tree_sitter(file_path)
-
-    def _extract_with_tree_sitter(self, file_path: Path) -> list[tuple[str, int]]:
-        """使用 tree-sitter 精确解析 import/include，返回 (文本, 行号)。"""
-        from tree_sitter import Language, Parser
-
-        source = file_path.read_text(encoding="utf-8", errors="replace")
-        parser = Parser()
-        if self.language == "python":
-            import tree_sitter_python  # type: ignore
-
-            language = Language(tree_sitter_python.language())
-        elif self.language == "cpp":
-            import tree_sitter_cpp  # type: ignore
-
-            language = Language(tree_sitter_cpp.language())
-        else:
-            return []
-        parser.language = language
-
-        tree = parser.parse(source.encode("utf-8"))
-        raw: list[tuple[str, int]] = []
-        seen: set[str] = set()
-        source_bytes = source.encode("utf-8")
-
-        def node_text(node) -> str:
-            return source_bytes[node.start_byte:node.end_byte].decode(
-                "utf-8", errors="replace"
-            )
-
-        def add(value: str, line: int) -> None:
-            value = value.strip().strip('"').strip("'").strip("<").strip(">")
-            if value and value not in seen:
-                seen.add(value)
-                raw.append((value, line))
-
-        stack = [tree.root_node]
-        while stack:
-            node = stack.pop()
-            if self.language == "python" and node.type == "import_statement":
-                for index, child in enumerate(node.children):
-                    if node.field_name_for_child(index) != "name":
-                        continue
-                    name_node = (
-                        child.child_by_field_name("name")
-                        if child.type == "aliased_import"
-                        else child
-                    )
-                    add(node_text(name_node), node.start_point.row + 1)
-                continue
-            if self.language == "python" and node.type == "import_from_statement":
-                module_node = node.child_by_field_name("module_name")
-                if module_node is not None:
-                    module = node_text(module_node).strip()
-                    add(module, node.start_point.row + 1)
-                    for index, child in enumerate(node.children):
-                        if node.field_name_for_child(index) != "name":
-                            continue
-                        name_node = (
-                            child.child_by_field_name("name")
-                            if child.type == "aliased_import"
-                            else child
-                        )
-                        imported = node_text(name_node).strip()
-                        if imported and imported != "*":
-                            add(f"{module}.{imported}", node.start_point.row + 1)
-                continue
-            if self.language == "cpp" and node.type == "preproc_include":
-                path_node = node.child_by_field_name("path")
-                if path_node is not None:
-                    add(node_text(path_node), node.start_point.row + 1)
-                continue
-            stack.extend(reversed(node.children))
-        return raw
-
-    def _extract_without_tree_sitter(self, file_path: Path) -> list[tuple[str, int]]:
-        """Use best-effort regex extraction when tree-sitter is unavailable."""
-        source = file_path.read_text(encoding="utf-8", errors="replace")
-
-        if self.language == "python":
-            return _extract_python_imports_with_regex(source)
-
-        raw: list[tuple[str, int]] = []
-        if self.language == "cpp":
-            for m in re.finditer(r'#include\s+"([^"]+)"', source):
-                raw.append((m.group(1), _line_of(source, m.start())))
-            for m in re.finditer(r'#include\s+<([^>]+)>', source):
-                raw.append((m.group(1), _line_of(source, m.start())))
-
-        return raw
-
-
-def _line_of(source: str, pos: int) -> int:
-    """返回 source 中位置 pos 的行号（1-based）。"""
-    return source[:pos].count("\n") + 1
-
-
-def _extract_python_imports_with_regex(source: str) -> list[tuple[str, int]]:
-    """Best-effort import extraction for Python 2 or damaged source files."""
-    raw: list[tuple[str, int]] = []
-    import_pattern = re.compile(r'^\s*import\s+([^#\n]+)', re.MULTILINE)
-    from_pattern = re.compile(
-        r'^\s*from\s+([.\w]+)\s+import\s+(\([^)]*\)|[^#\n]+)',
-        re.MULTILINE,
-    )
-    for match in import_pattern.finditer(source):
-        line = _line_of(source, match.start())
-        for item in match.group(1).split(","):
-            name = item.strip().split(" as ", 1)[0].strip()
-            if name:
-                raw.append((name, line))
-    for match in from_pattern.finditer(source):
-        module = match.group(1).strip()
-        line = _line_of(source, match.start())
-        raw.append((module, line))
-        names = match.group(2).strip().strip("()")
-        for item in names.split(","):
-            name = item.strip().split(" as ", 1)[0].strip()
-            if name and name != "*":
-                raw.append((f"{module}.{name}", line))
-    return raw
-
-
-# ---------------------------------------------------------------------------
-# 导入路径解析
-# ---------------------------------------------------------------------------
-
-def _resolve_python_import(
-    import_text: str,
-    importer_rel_path: str,
-    known_files: set[str],
-) -> str | None:
-    if import_text.startswith("."):
-        importer_dir = Path(importer_rel_path).parent
-        dots = 0
-        for ch in import_text:
-            if ch == ".":
-                dots += 1
-            else:
-                break
-        module_part = import_text[dots:]
-        for _ in range(dots - 1):
-            importer_dir = importer_dir.parent
-        if module_part:
-            target = (importer_dir / module_part.replace(".", "/")).as_posix()
-        else:
-            target = importer_dir.as_posix()
-        for candidate in (f"{target}.py", f"{target}/__init__.py"):
-            if candidate in known_files:
-                return candidate
-        return None
-
-    # 绝对导入，从 source_root 搜索，最长匹配优先
-    parts = import_text.split(".")
-    importer_dir = Path(importer_rel_path).parent
-
-    for i in range(len(parts), 0, -1):
-        target = "/".join(parts[:i])
-        # 1) 标准 Python 3：从 source_root 搜索
-        for candidate in (f"{target}.py", f"{target}/__init__.py"):
-            if candidate in known_files:
-                return candidate
-        # 2) 回退：导入者同目录（sys.path[0] = 脚本所在目录）
-        for candidate in (
-            f"{(importer_dir / target).as_posix()}.py",
-            f"{(importer_dir / target).as_posix()}/__init__.py",
-        ):
-            if candidate in known_files:
-                return candidate
-    return None
-
-
-def _resolve_cpp_include(
-    include_text: str,
-    importer_rel_path: str,
-    known_files: set[str],
-) -> str | None:
-    importer_dir = Path(importer_rel_path).parent
-    cpp_exts = LANGUAGE_EXTENSIONS["cpp"]
-
-    def candidates(base: str) -> list[str]:
-        base = posixpath.normpath(base.replace("\\", "/"))
-        if any(base.endswith(ext) for ext in cpp_exts):
-            return [base]
-        return [f"{base}{ext}" for ext in cpp_exts]
-
-    # 1) 引号形式：相对导入文件所在目录
-    for c in candidates((importer_dir / include_text).as_posix()):
-        if c in known_files:
-            return c
-
-    # 2) 相对于 source_root 精确匹配
-    for c in candidates(include_text):
-        if c in known_files:
-            return c
-
-    # 3) 后缀匹配（-I include/path 导致的路径偏移）
-    #    #include <beast/server.hpp> 实际文件在 include/beast/server.hpp
-    for c in candidates(include_text):
-        suffix = "/" + c
-        matches = [k for k in known_files if k.endswith(suffix) or k == c]
-        if len(matches) == 1:
-            return matches[0]
-
-    return None
+# Compatibility export for existing callers; implementation lives in repository_analysis.
+DependencyExtractor = ImportExtractor
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +47,10 @@ def _last_definition_line(source_root: Path, rel_path: str, language: str) -> in
 
     if language == "python":
         pattern = r'^\s*(?:class|def|async def)\s+'
+    elif language == "javascript":
+        pattern = r'^\s*(?:export\s+)?(?:async\s+)?(?:class|function)\s+'
     else:
-        pattern = r'^\s*(?:class|struct|enum\s+class|enum)\s+'
+        pattern = r'^\s*(?:(?:public|private|protected|internal|static|final|abstract)\s+)*(?:class|struct|interface|record|enum\s+class|enum)\s+'
 
     last = 0
     for m in re.finditer(pattern, source, re.MULTILINE):
@@ -328,64 +67,13 @@ def build_dependency_graph(
     languages: list[str],
     include_tests: bool = False,
 ) -> tuple[dict[str, list[str]], set[str], dict[tuple[str, str], int]]:
-    """
-    返回:
-        adjacency:   { rel_path → [依赖的 rel_path] }
-        all_nodes:   所有 rel_path 的集合
-        edge_lines:  {(source, target) → import_line} 用于环路断开
-    """
-    # 收集节点
-    all_nodes: set[str] = set()
-    for language in languages:
-        node_exts = LANGUAGE_EXTENSIONS[language]
-        for path in sorted(source_root.rglob("*")):
-            if not path.is_file() or _should_skip(
-                path.relative_to(source_root), include_tests
-            ):
-                continue
-            if path.suffix.lower() in node_exts:
-                all_nodes.add(path.relative_to(source_root).as_posix())
-
-    adjacency: dict[str, list[str]] = {}
-    edge_lines: dict[tuple[str, str], int] = {}
-
-    for language in languages:
-        extractor = DependencyExtractor(source_root, language)
-        scan_exts = LANGUAGE_EXTENSIONS[language]
-        for path in sorted(source_root.rglob("*")):
-            if not path.is_file() or _should_skip(
-                path.relative_to(source_root), include_tests
-            ):
-                continue
-            if path.suffix.lower() not in scan_exts:
-                continue
-
-            importer_rel = path.relative_to(source_root).as_posix()
-            raw_imports = extractor.extract_imports(path)
-            seen: set[str] = set()
-            resolved: list[str] = []
-            for raw, line_no in raw_imports:
-                if language == "python":
-                    target = _resolve_python_import(raw, importer_rel, all_nodes)
-                else:
-                    target = _resolve_cpp_include(raw, importer_rel, all_nodes)
-                if target and target != importer_rel:
-                    if target not in seen:
-                        seen.add(target)
-                        resolved.append(target)
-                        edge_lines.setdefault((importer_rel, target), line_no)
-                elif target is None:
-                    label = f"ext:{raw}"
-                    if label not in seen:
-                        seen.add(label)
-                        resolved.append(label)
-
-            adjacency[importer_rel] = resolved
-
-    for node in all_nodes:
-        adjacency.setdefault(node, [])
-
-    return adjacency, all_nodes, edge_lines
+    """Compatibility wrapper around the shared repository dependency graph."""
+    graph = build_file_dependency_graph(
+        source_root,
+        languages,
+        include_tests=include_tests,
+    )
+    return graph.adjacency, graph.nodes, graph.edge_lines
 
 
 def topological_sort(
@@ -605,6 +293,7 @@ def build_json_result(
                 })
 
     return {
+        "schema_version": 1,
         "source_root": str(source_root),
         "languages": languages,
         "translation_order": sorted_order,
@@ -870,6 +559,231 @@ def _run_interactive(
 # CLI
 # ---------------------------------------------------------------------------
 
+def analyze_project(
+    source_root: str | Path,
+    languages: str | Sequence[str],
+    *,
+    include_tests: bool = False,
+) -> dict[str, object]:
+    """Analyze one repository and return the stable JSON-compatible result."""
+    root = Path(source_root).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Source directory does not exist: {root}")
+    normalized = normalize_languages(languages)
+    adjacency, all_nodes, edge_lines = build_dependency_graph(
+        root, normalized, include_tests=include_tests,
+    )
+    order, cycles, broken_edges = topological_sort(
+        adjacency, all_nodes, edge_lines, normalized, root,
+    )
+    effective = _effective_adjacency(adjacency, broken_edges)
+    chains = build_feature_chains(effective, all_nodes, order)
+    return build_json_result(
+        root,
+        normalized,
+        adjacency,
+        all_nodes,
+        edge_lines,
+        order,
+        cycles,
+        broken_edges,
+        chains,
+    )
+
+
+def _progress_file_path(
+    value: str | Path,
+    source_root: Path,
+    all_nodes: set[str],
+) -> str:
+    """Normalize a caller-provided translated-file name to a repository path."""
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("translated_files cannot contain an empty path")
+
+    candidate_path = Path(raw).expanduser()
+    if candidate_path.is_absolute():
+        try:
+            candidate = candidate_path.resolve().relative_to(source_root).as_posix()
+        except ValueError as exc:
+            raise ValueError(
+                f"Translated file is outside the source repository: {raw}"
+            ) from exc
+    else:
+        candidate = raw.replace("\\", "/").lstrip("./")
+        candidate = posixpath.normpath(candidate)
+
+    if candidate in all_nodes:
+        return candidate
+
+    matches = sorted(
+        path for path in all_nodes
+        if path.endswith("/" + candidate) or path == candidate
+    )
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"Translated file does not belong to the repository: {raw}")
+    matches_text = ", ".join(matches)
+    raise ValueError(
+        f"Translated file is ambiguous: {raw}; matches: {matches_text}"
+    )
+
+
+def _transitive_dependencies(
+    start: str,
+    adjacency: dict[str, list[str]],
+    all_nodes: set[str],
+) -> set[str]:
+    """Return all repository files reachable from a file through dependencies."""
+    result: set[str] = set()
+    stack = list(adjacency.get(start, []))
+    while stack:
+        dependency = stack.pop()
+        if dependency not in all_nodes or dependency in result:
+            continue
+        result.add(dependency)
+        stack.extend(adjacency.get(dependency, []))
+    return result
+
+
+def _verification_files(
+    source_root: Path,
+    languages: list[str],
+    source_files: set[str],
+) -> list[dict[str, object]]:
+    """Find test files whose static import closure touches a planned chain."""
+    test_adjacency, all_nodes, _ = build_dependency_graph(
+        source_root, languages, include_tests=True,
+    )
+    tests = []
+    for path in sorted(all_nodes):
+        relative = source_root / path
+        if not is_test_path(relative, source_root):
+            continue
+        covered = sorted(
+            _transitive_dependencies(path, test_adjacency, all_nodes) & source_files
+        )
+        if covered:
+            tests.append({"file": path, "covered_files": covered})
+    return tests
+
+
+def plan_translation_batch(
+    source_root: str | Path,
+    languages: str | Sequence[str],
+    translated_files: Sequence[str | Path] = (),
+    requested_count: int = 1,
+    *,
+    include_tests: bool = False,
+) -> dict[str, object]:
+    """Plan the next translation batch that completes one or more feature chains.
+
+    requested_count is a lower bound. If the next feature chain needs more
+    files, the returned batch is expanded so the translated result can reach a
+    testable boundary instead of stopping at an arbitrary file count.
+    """
+    if requested_count < 1:
+        raise ValueError("requested_count must be at least 1")
+
+    root = Path(source_root).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Source directory does not exist: {root}")
+    normalized = normalize_languages(languages)
+    analysis = analyze_project(root, normalized, include_tests=include_tests)
+    all_nodes = set(analysis["translation_order"])
+    translated = {
+        _progress_file_path(value, root, all_nodes)
+        for value in translated_files
+    }
+    order = list(analysis["translation_order"])
+    order_index = {path: index for index, path in enumerate(order)}
+
+    chain_records = list(analysis["chains"])
+    incomplete = [
+        chain for chain in chain_records
+        if any(path not in translated for path in chain["files"])
+    ]
+    incomplete.sort(
+        key=lambda chain: (
+            0 if any(path in translated for path in chain["files"]) else 1,
+            min(order_index[path] for path in chain["files"]),
+        )
+    )
+
+    selected_chains: list[dict[str, object]] = []
+    recommended: list[str] = []
+    translated_after = set(translated)
+    for chain in incomplete:
+        remaining = [
+            path for path in chain["files"] if path not in translated_after
+        ]
+        if not remaining:
+            continue
+        selected_chains.append({
+            "entry": chain["entry"],
+            "files": remaining,
+            "already_translated": [
+                path for path in chain["files"] if path in translated
+            ],
+        })
+        recommended.extend(remaining)
+        translated_after.update(remaining)
+        if len(recommended) >= requested_count:
+            break
+
+    recommended.sort(key=order_index.__getitem__)
+    selected_set = set(recommended)
+    dependencies = analysis["dependencies"]
+    blockers = sorted({
+        item["depends_on"]
+        for item in dependencies
+        if item["file"] in selected_set
+        and item["depends_on"] in all_nodes
+        and item["depends_on"] not in translated_after
+        and item["depends_on"] not in selected_set
+    })
+
+    verification_tests = _verification_files(root, normalized, selected_set)
+    expanded = len(recommended) > requested_count
+    if not recommended:
+        status = "repository_complete"
+    elif blockers:
+        status = "blocked_by_dependencies"
+    elif not verification_tests:
+        status = "no_static_verification_test"
+    else:
+        status = "ready_for_realtime_test"
+
+    reasons: list[str] = []
+    if expanded:
+        reasons.append("expanded_to_complete_feature_chain")
+    if len(selected_chains) > 1:
+        reasons.append("included_additional_chain_to_reach_requested_count")
+    if blockers:
+        reasons.append("selected_chain_has_untranslated_dependencies")
+    if not verification_tests and recommended:
+        reasons.append("no_test_file_imports_the_selected_source_chain")
+
+    return {
+        "schema_version": 2,
+        "source_root": str(root),
+        "languages": normalized,
+        "translated_files": sorted(translated),
+        "requested_count": requested_count,
+        "recommended_files": recommended,
+        "recommended_count": len(recommended),
+        "expanded": expanded,
+        "expansion_count": max(0, len(recommended) - requested_count),
+        "reasons": reasons,
+        "status": status,
+        "selected_chains": selected_chains,
+        "verification_tests": verification_tests,
+        "realtime_test_ready": status == "ready_for_realtime_test",
+        "untranslated_dependencies": blockers,
+        "translation_order": order,
+    }
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Topological sort of source files based on import/include dependencies.",
@@ -882,7 +796,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lang",
         default="python",
-        help="Language: python, cpp, or comma-separated list. Default: python",
+        help=(
+            "Language: python, c, cpp, java, javascript, csharp, aliases, "
+            "or a comma-separated list. Default: python"
+        ),
     )
     parser.add_argument(
         "-o", "--output",
@@ -926,11 +843,11 @@ def main() -> None:
         print(f"Error: {source_root} is not a directory.", file=sys.stderr)
         sys.exit(1)
 
-    languages = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
-    for lang in languages:
-        if lang not in LANGUAGE_EXTENSIONS:
-            print(f"Error: unsupported language '{lang}'. Supported: {list(LANGUAGE_EXTENSIONS)}", file=sys.stderr)
-            sys.exit(1)
+    try:
+        languages = normalize_languages(args.lang)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.interactive:
         state_path = (
@@ -949,31 +866,17 @@ def main() -> None:
 
     print(f"Scanning {source_root} for {', '.join(languages)} files...", file=sys.stderr)
 
-    adjacency, all_nodes, edge_lines = build_dependency_graph(
-        source_root,
-        languages,
-        include_tests=args.include_tests,
+    result = analyze_project(
+        source_root, languages, include_tests=args.include_tests,
     )
-    sorted_order, cycles, broken_edges = topological_sort(
-        adjacency, all_nodes, edge_lines, languages, source_root,
-    )
-    effective_adjacency = _effective_adjacency(adjacency, broken_edges)
-    chains = build_feature_chains(
-        effective_adjacency, all_nodes, sorted_order,
-    )
+    sorted_order = result["translation_order"]
+    cycles = result["cycles"]
+    broken_edges = {
+        (item["file"], item["depends_on"])
+        for item in result["broken_edges"]
+    }
 
     if args.format == "json":
-        result = build_json_result(
-            source_root,
-            languages,
-            adjacency,
-            all_nodes,
-            edge_lines,
-            sorted_order,
-            cycles,
-            broken_edges,
-            chains,
-        )
         output = json.dumps(result, ensure_ascii=False, indent=2)
     else:
         output = "\n".join(sorted_order)

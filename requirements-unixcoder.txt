@@ -1,0 +1,5 @@
+-r requirements.txt
+torch
+transformers>=4.40
+sentencepiece>=0.2
+huggingface-hub>=0.30

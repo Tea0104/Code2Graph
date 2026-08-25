@@ -1,79 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
 from typing import Iterable
 
-from tree_sitter import Language, Parser
-import tree_sitter_cpp
-import tree_sitter_python
+from tree_sitter import Parser
 
+from repository_analysis.graph import EdgeRecord, GraphBuilder, NodeRecord, ScopeState
+from repository_analysis.languages import LANGUAGE_EXTENSIONS as SHARED_LANGUAGE_EXTENSIONS
+from repository_analysis.parsing import node_text as shared_node_text
+from repository_analysis.parsing import parser_for as shared_parser_for
 
+FULL_GRAPH_LANGUAGES = ("python", "cpp")
 LANGUAGE_EXTENSIONS: dict[str, set[str]] = {
-    "python": {".py"},
-    "cpp": {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"},
+    language: set(SHARED_LANGUAGE_EXTENSIONS[language])
+    for language in FULL_GRAPH_LANGUAGES
 }
 
 SKIP_DIR_NAMES = {".git", "__pycache__", ".venv", "venv", "node_modules", "build"}
-
-
-@dataclass
-class NodeRecord:
-    id: str
-    kind: str
-    name: str
-    file: str
-    startline: int
-    endline: int
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-@dataclass
-class EdgeRecord:
-    edge_id: str
-    source: str
-    target: str | None
-    kind: str
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-@dataclass
-class ScopeState:
-    node_id: str
-    kind: str
-    name: str
-    file: str
-    startline: int
-    endline: int
-    parent_id: str | None = None
-    class_id: str | None = None
-    symbols: dict[str, str | None] = field(default_factory=dict)
-
-
-class GraphBuilder:
-    def __init__(self) -> None:
-        self.nodes: dict[str, NodeRecord] = {}
-        self.edges: dict[str, EdgeRecord] = {}
-
-    def add_node(self, kind: str, name: str, file: str, startline: int, endline: int) -> str:
-        node_id = f"{file}:{name}:{startline}"
-        self.nodes.setdefault(node_id, NodeRecord(node_id, kind, name, file, startline, endline))
-        return node_id
-
-    def add_edge(self, kind: str, source_id: str, target_id: str | None) -> None:
-        edge_id = f"{source_id}:{target_id}:{kind}"
-        self.edges.setdefault(edge_id, EdgeRecord(edge_id, source_id, target_id, kind))
-
-    def nodes_json(self) -> dict[str, dict[str, object]]:
-        return {node_id: node.to_dict() for node_id, node in self.nodes.items()}
-
-    def edges_json(self) -> dict[str, dict[str, object]]:
-        return {edge_id: edge.to_dict() for edge_id, edge in self.edges.items()}
 
 
 def _read_text(path: Path) -> str:
@@ -81,7 +25,7 @@ def _read_text(path: Path) -> str:
 
 
 def _node_text(source: str, node) -> str:
-    return source.encode("utf-8")[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+    return shared_node_text(source, node)
 
 
 def _line_start(node) -> int:
@@ -110,20 +54,11 @@ def _identifier_text(node, source: str) -> str | None:
     return text.replace("*", "").replace("&", "").replace("::", "::").strip()
 
 
-def _parser_for(language: str) -> Parser:
-    parser = Parser()
-    if language == "python":
-        parser.language = Language(tree_sitter_python.language())
-    elif language == "cpp":
-        parser.language = Language(tree_sitter_cpp.language())
-    else:
-        raise ValueError(f"Unsupported language: {language}")
-    return parser
-
-
 def parser_for(language: str) -> Parser:
-    """Return the repository's configured tree-sitter parser."""
-    return _parser_for(language)
+    """Backward-compatible access to the shared Tree-sitter parser."""
+    if language not in FULL_GRAPH_LANGUAGES:
+        raise ValueError(f"Unsupported full-graph language: {language}")
+    return shared_parser_for(language)
 
 
 def node_text(source: str, node) -> str:
@@ -144,7 +79,7 @@ class BaseExtractor:
         self.graph = graph
         self.language = language
         self.source_root = source_root
-        self.parser = _parser_for(language)
+        self.parser = parser_for(language)
         self.scope_index: dict[str, ScopeState] = {}
 
     def extract_file(self, path: Path) -> None:

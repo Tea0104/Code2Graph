@@ -1,18 +1,44 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and editors
+.venv/
+.venv-*/
+venv/
+.vscode/
+.idea/
+
+# Code2Graph generated artifacts
+.code2graph/
 build/
 output/
-codeql_db/
-codeql_results/
-__pycache__/
-.vscode/
-venv/
-.venv-test-mapping/
-*.pyc
+outputs/
+indexes/
 test_mapping_outputs/
 test_mapping_indexes/
-QUICKSTART.md
-CHANGELOG.md
-.gitignore
-retriever/web_ui.py
-retriever/faiss_cache.*
+.translate_state.json
+codeql_db/
+codeql_results/
+
+# Local datasets, models, and adjacent program checkouts
+data/
+dataset/
+datasets/
+organized_*/
+models/
+RepoDoc/
 test_cpp/
 test_fixtures/
+
+# Transfer and backup archives
+*.bundle
+*.tar
+*.tar.gz
+*.tgz
+*.zip

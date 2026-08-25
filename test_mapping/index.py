@@ -6,18 +6,55 @@ from pathlib import Path
 import numpy as np
 
 from .embedding import Embedder, normalize
-from .models import SearchHit, TestChunk
+from .models import FunctionChunk, SearchHit, TestChunk
+
+
+IndexChunk = TestChunk | FunctionChunk
 
 
 class VectorIndex:
-    VERSION = 1
+    VERSION = 3
 
-    def __init__(self, chunks: list[TestChunk], vectors: np.ndarray, embedder_name: str, backend: str = "numpy") -> None:
+    def __init__(
+        self,
+        chunks: list[IndexChunk],
+        vectors: np.ndarray,
+        embedder_name: str,
+        backend: str = "numpy",
+        *,
+        chunk_type: str | None = None,
+        corpus_role: str | None = None,
+    ) -> None:
         if len(chunks) != len(vectors):
             raise ValueError("Chunk and vector counts differ")
         self.chunks = chunks
         self.vectors = normalize(np.asarray(vectors, dtype=np.float32))
         self.embedder_name = embedder_name
+        inferred_types = {
+            "test" if isinstance(chunk, TestChunk) else "function"
+            for chunk in chunks
+        }
+        if len(inferred_types) > 1:
+            raise ValueError("A vector index cannot mix test and function chunks")
+        inferred = next(iter(inferred_types), chunk_type or "test")
+        self.chunk_type = chunk_type or inferred
+        if self.chunk_type not in {"test", "function"}:
+            raise ValueError(f"Unsupported index chunk type: {self.chunk_type}")
+        if inferred_types and inferred != self.chunk_type:
+            raise ValueError(
+                f"Index declares {self.chunk_type} chunks but contains {inferred} chunks"
+            )
+        default_role = "test" if self.chunk_type == "test" else "function"
+        self.corpus_role = corpus_role or default_role
+        allowed_roles = (
+            {"test", "target_test", "source_test"}
+            if self.chunk_type == "test"
+            else {"function", "source_function"}
+        )
+        if self.corpus_role not in allowed_roles:
+            raise ValueError(
+                f"Index role {self.corpus_role} is incompatible with {self.chunk_type} chunks"
+            )
         self.backend = backend
         self._faiss = None
         if backend not in {"numpy", "faiss", "auto"}:
@@ -34,8 +71,21 @@ class VectorIndex:
                 self.backend = "numpy"
 
     @classmethod
-    def build(cls, chunks: list[TestChunk], embedder: Embedder, *, backend: str = "numpy") -> "VectorIndex":
-        return cls(chunks, embedder.encode([chunk.chunk_text for chunk in chunks]), embedder.name, backend)
+    def build(
+        cls,
+        chunks: list[IndexChunk],
+        embedder: Embedder,
+        *,
+        backend: str = "numpy",
+        corpus_role: str | None = None,
+    ) -> "VectorIndex":
+        return cls(
+            chunks,
+            embedder.encode([chunk.chunk_text for chunk in chunks]),
+            embedder.name,
+            backend,
+            corpus_role=corpus_role,
+        )
 
     def search(self, text: str, embedder: Embedder, *, k: int = 5, project: str | None = None, strategy: str = "test") -> list[SearchHit]:
         if embedder.name != self.embedder_name:
@@ -65,13 +115,37 @@ class VectorIndex:
         (directory / "chunks.jsonl").write_text(
             "".join(json.dumps(chunk.to_dict(), ensure_ascii=False) + "\n" for chunk in self.chunks), encoding="utf-8"
         )
-        manifest = {"version": self.VERSION, "embedder": self.embedder_name, "backend": self.backend, "dimension": int(self.vectors.shape[1]), "chunks": len(self.chunks)}
+        manifest = {
+            "version": self.VERSION,
+            "embedder": self.embedder_name,
+            "backend": self.backend,
+            "dimension": int(self.vectors.shape[1]),
+            "chunks": len(self.chunks),
+            "chunk_type": self.chunk_type,
+            "corpus_role": self.corpus_role,
+        }
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, directory: Path) -> "VectorIndex":
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        if manifest["version"] != cls.VERSION:
+        if manifest["version"] not in {1, 2, cls.VERSION}:
             raise ValueError(f"Unsupported index version: {manifest['version']}")
-        chunks = [TestChunk.from_dict(json.loads(line)) for line in (directory / "chunks.jsonl").read_text(encoding="utf-8").splitlines() if line]
-        return cls(chunks, np.load(directory / "vectors.npy"), manifest["embedder"], manifest.get("backend", "numpy"))
+        chunk_type = manifest.get("chunk_type", "test")
+        corpus_role = manifest.get("corpus_role")
+        if corpus_role is None:
+            corpus_role = "target_test" if chunk_type == "test" else "source_function"
+        chunk_class = TestChunk if chunk_type == "test" else FunctionChunk
+        chunks = [
+            chunk_class.from_dict(json.loads(line))
+            for line in (directory / "chunks.jsonl").read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        return cls(
+            chunks,
+            np.load(directory / "vectors.npy"),
+            manifest["embedder"],
+            manifest.get("backend", "numpy"),
+            chunk_type=chunk_type,
+            corpus_role=corpus_role,
+        )

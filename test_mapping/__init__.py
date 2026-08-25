@@ -1,5 +1,6 @@
 """Source-test to Source-function mapping utilities."""
 
+from .api import SourceTestMappingAPI
 from .models import LanguagePair, TestChunk
 
 __all__ = [
@@ -9,6 +10,7 @@ __all__ = [
     "lookup_mapped_source_functions",
     "lookup_source_function_mapping_record",
     "lookup_source_function_mapping_result",
+    "SourceTestMappingAPI",
     "TestChunk",
 ]
 

@@ -1,6 +1,6 @@
 # 文件翻译顺序与进度工具
 
-该工具分析项目内部的 Python `import` 或 C/C++ `#include` 关系，生成依赖优先的文件翻译顺序，并支持交互式记录翻译进度。默认排除测试代码。
+该工具分析项目内部的 Python、C/C++、Java、JavaScript 和 C# 显式依赖关系，生成依赖优先的文件翻译顺序，并支持交互式记录翻译进度。默认排除测试代码。
 
 ## 环境
 
@@ -10,10 +10,25 @@
 python -m pip install `
   tree-sitter==0.25.2 `
   tree-sitter-python==0.25.0 `
-  tree-sitter-cpp==0.23.4
+  tree-sitter-cpp==0.23.4 `
+  tree-sitter-c `
+  tree-sitter-java `
+  tree-sitter-javascript `
+  tree-sitter-c-sharp
 ```
 
 工具优先使用 tree-sitter，不依赖目标项目的 Python 运行时版本。tree-sitter 不可用或解析失败时会回退到正则提取 import/include。
+
+也可以作为稳定的 Python 接口复用：
+
+```python
+from file_topo_sort import analyze_project
+
+result = analyze_project("./my-project", "java")
+print(result["translation_order"])
+```
+
+该接口返回带 `schema_version` 的 JSON 兼容字典。CLI 的 `--format json` 使用完全相同的数据结构。
 
 ## 静态排序
 
@@ -83,7 +98,7 @@ python .\file_topo_sort\topo_sort_files.py `
 | 参数 | 说明 |
 |---|---|
 | `--source PATH` | 待分析项目路径，必填 |
-| `--lang LANG` | `python`、`cpp` 或逗号分隔的多个语言 |
+| `--lang LANG` | `python`、`c`、`cpp`、`java`、`javascript`、`csharp`，支持常见别名和逗号分隔 |
 | `--format text/json` | 静态输出格式 |
 | `-o, --output PATH` | 静态结果输出文件 |
 | `--include-tests` | 将测试文件纳入分析 |

@@ -48,8 +48,22 @@ class FunctionChunk:
     parent: str | None = None
     calls: list[str] = field(default_factory=list)
 
+    @property
+    def chunk_text(self) -> str:
+        parent = f"\nParent: {self.parent}" if self.parent else ""
+        calls = f"\nCalls: {', '.join(self.calls)}" if self.calls else ""
+        return (
+            f"Source function: {self.qualified_name}\n"
+            f"File: {self.file}{parent}{calls}\n"
+            f"Code:\n{self.code}"
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "FunctionChunk":
+        return cls(**value)
 
 
 @dataclass
@@ -109,7 +123,7 @@ class SearchHit:
     score: float
     rank: int
     strategy: str
-    chunk: TestChunk
+    chunk: TestChunk | FunctionChunk
 
     def to_dict(self) -> dict[str, Any]:
         return {
