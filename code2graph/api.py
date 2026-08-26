@@ -59,7 +59,7 @@ class Code2GraphPipeline:
         target_test_file: str | None = None,
         strategy: str = "fusion",
         top_k_source_tests: int = 5,
-        top_k_source_functions: int = 5,
+        top_k_source_functions: int | None = 5,
         mask_names: bool = False,
     ) -> str:
         """将一个 Target test 函数定位到 Source function 代码字符串。"""
@@ -135,7 +135,7 @@ def locate_target_test_to_source_code(
     target_test_file: str | None = None,
     strategy: str = "fusion",
     top_k_source_tests: int = 5,
-    top_k_source_functions: int = 5,
+    top_k_source_functions: int | None = 5,
     mask_names: bool = False,
     embedder_kind: str = "unixcoder",
     model_path: str | Path | None = None,

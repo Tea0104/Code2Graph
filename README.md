@@ -1,48 +1,39 @@
 # Code2Graph
 
-Code2Graph 是面向代码翻译主程序的仓库分析与测试定位组件。当前正式流程以
-一个 Source repository 为输入，对外提供三个稳定接口：
+Code2Graph 是面向代码翻译主程序的仓库分析与测试定位组件。对外推荐只使用
+仓库根目录的 `repoanalyze.py`，通过一个 `RepoAnalyze` 对象完成初始化、翻译顺序
+获取和 Target test 定位。
 
-1. 初始化 Source 仓库并生成代码图、Chunk、向量索引和静态映射；
-2. 根据文件依赖关系生成翻译顺序；
-3. 将 Target test code 定位到 Source test，再映射到 Source function code。
+## 主流程
 
-## Pipeline
-
-```text
+```
 Source repository
         |
         v
-initialize
-  ├── Tree-sitter 代码图
-  ├── Source function / Source test Chunk
-  ├── Source-test UniXcoder 向量索引
-  ├── Source test -> Source function 静态映射
-  └── 文件依赖与翻译顺序
+RepoAnalyze.initrepo()
+        ├── Tree-sitter 代码图
+        ├── Source function / Source test Chunk
+        ├── Source-test Embedding 索引
+        ├── Source test -> Source function 静态映射
+        └── 文件级翻译顺序
 
 Target test code
         |
         v
-Source-test RAG (dense / structure / fusion)
-        |
-        v
-Source test -> Source function 静态映射
-        |
-        v
-Source function 位置与代码
+Target test -> Top-1 Source test -> 全部 Source functions
 ```
 
 ## 目录
 
-```text
-code2graph/           对外 API 与流程编排
-repository_analysis/  公共语言、仓库扫描、Tree-sitter 与文件依赖图
-file_topo_sort/       拓扑排序、循环处理与功能链
-test_mapping/         Chunk、向量索引、RAG 与静态函数映射
-tree_sitter_graph/    Python/C++ 完整代码图提取
-dynamic_test_mapping/ 可选的 coverage 动态映射实验组件
-tests/                正式主流程测试
-docs/                 正式 API 与组件职责说明
+```
+repoanalyze.py        面向 Agent 的统一入口
+code2graph/           初始化、RAG 查询和流程适配
+repository_analysis/  公共语言、仓库扫描和文件依赖图
+file_topo_sort/       文件拓扑排序和翻译顺序
+test_mapping/         Chunk、Embedding 索引和静态函数映射
+tree_sitter_graph/    Python/C++ 代码图提取
+dynamic_test_mapping/ 可选的动态测试映射组件
+docs/                 正式 API 和组件说明
 ```
 
 ## 安装
@@ -53,86 +44,111 @@ docs/                 正式 API 与组件职责说明
 python -m pip install -r requirements.txt
 ```
 
-使用 UniXcoder 和 GPU 检索时：
+使用 UniXcoder 和 GPU 检索：
 
 ```bash
 python -m pip install -r requirements-unixcoder.txt
 ```
 
-UniXcoder 模型应提前下载到本地；初始化和查询使用同一个 `model_path`。
-
 ## 使用
 
-### 1. 初始化 Source 仓库
+### 1. 创建统一入口
 
 ```python
-from code2graph import initialize
+from repoanalyze import RepoAnalyze
 
-result = initialize(
-    "/path/to/source-repository",
-    source_language="Python",
+repo = RepoAnalyze()
+```
+
+也可以使用兼容导出：
+
+```python
+from code2graph import RepoAnalyze
+```
+
+### 2. 初始化 Source 仓库
+
+```python
+repo.initrepo(
+    source_path="/path/to/source-repository",
+    embedder_kind="unixcoder",
     model_path="/path/to/unixcoder-base-nine",
     device="auto",
+    source_language="Python",  # 可选；不传时自动识别
 )
-print(result.artifact_dir)
 ```
 
-默认产物保存到 Source repository 的 `.code2graph/`。初始化不需要 Target
-repository。
+只有 `source_path` 是必须参数。初始化方法不返回业务结果，生成的状态保存在
+`source_path/.code2graph/` 中。初始化会完成代码图、Source function 和 Source test
+Chunk、Embedding 索引、Source test 到 Source function 的静态映射以及翻译顺序表。
 
-### 2. 获取翻译顺序
+如果 Agent 没有主动调用 `initrepo`，后面的两个业务接口会自动检查
+`.code2graph/manifest.json`；缺少该文件时会使用默认参数自动初始化。
+
+### 3. 获取翻译顺序
 
 ```python
-from code2graph import get_translation_order
-
-plan = get_translation_order(
-    "/path/to/source-repository",
-    ["Python"],
+files = repo.get_translation_order(
+    source_path="/path/to/source-repository",
+    number=2,
+    already=["config.py", "model.py"],
 )
-print(plan["translation_order"])
 ```
 
-### 3. 获取下一批翻译文件
+参数：
 
-如果 Agent 已经翻译了部分文件，可以让系统规划下一批完整功能链：
+- `source_path`：Source 仓库路径；
+- `number`：希望接下来翻译的文件数量；
+- `already`：已经翻译完成的文件；
+- `include_tests`：可选，是否把测试文件纳入顺序，默认 `False`。
+
+返回值是 `list[str]`。接口根据静态顺序表排除 `already`，再返回接下来的文件：
 
 ```python
-from code2graph import get_translation_batch
-
-plan = get_translation_batch(
-    "/path/to/source-repository",
-    ["Python"],
-    translated_files=["config.py", "model.py"],
-    requested_count=2,
-)
-print(plan["recommended_files"])
-print(plan["verification_tests"])
+["service.py", "controller.py"]
 ```
-
-请求数量是最低数量。如果只翻译指定数量不能形成完整功能链，系统会自动扩展并在
-expanded 和 reasons 中说明原因。
 
 ### 4. Target test 定位 Source code
 
 ```python
-from code2graph import Code2GraphPipeline
-
-pipeline = Code2GraphPipeline.from_artifact_dir(
-    "/path/to/source-repository/.code2graph",
-    model_path="/path/to/unixcoder-base-nine",
-)
-
-source_code = pipeline.locate_target_test_to_source_code(
+source_code = repo.target_test_to_source_code(
+    source_path="/path/to/source-repository",
     target_language="C++",
-    target_test_name="Calculator.Adds",
-    target_test_code=(
-        "TEST(Calculator, Adds) { EXPECT_EQ(add(1, 2), 3); }"
-    ),
+    target_test_code=target_test_code,
 )
-print(source_code)
 ```
 
-服务进程应复用一个 `Code2GraphPipeline` 实例，避免为每个测试重复加载模型。
+接口只要求三个参数：Source 仓库路径、Target test 语言和 Target test 代码。内部会：
+
+1. 检索排名第一的 Source test；
+2. 读取这个 Source test 的静态调用映射；
+3. 获取它对应的全部 Source functions；
+4. 按顺序拼接函数代码并返回。
+
+返回值是 `str`。没有匹配结果时返回空字符串。模型和索引会在第一次查询时加载，
+同一个 `RepoAnalyze` 对象后续查询会复用已经加载的 Pipeline。
+
+## 生成产物
+
+```
+.code2graph/
+├── manifest.json
+├── graph/
+│   ├── nodes.json
+│   └── edges.json
+├── chunks/
+│   ├── source_functions.jsonl
+│   └── source_tests.jsonl
+├── indexes/source_tests/
+│   ├── vectors.npy
+│   ├── chunks.jsonl
+│   └── manifest.json
+├── mappings/
+│   └── source_test_to_source_function.jsonl
+├── reports/
+└── translation/
+    └── translation_order.json
+```
 
 ## 测试
 
@@ -141,14 +157,13 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s file_topo_sort/tests -v
 ```
 
-`docs/` 只保留面向使用者的正式文档：
+更多组件职责和底层接口见：
 
-- [`docs/pipeline_api.md`](docs/pipeline_api.md)：公开接口、参数和返回值；
-- [`docs/components.md`](docs/components.md)：正式组件及其职责。
+- [`docs/components.md`](docs/components.md)
+- [`docs/pipeline_api.md`](docs/pipeline_api.md)
 
 ## 当前边界
 
-- Source function/test Chunk 的完整提取目前重点支持 Python 和 C++；
+- Source function 和 Source test 的完整提取目前重点支持 Python 和 C++；
 - 文件级翻译顺序支持 Python、C/C++、Java、JavaScript 和 C#；
-- “请求 N 个文件并自动扩展为测试闭环批次”的接口已经实现，仍待主程序接入；
-- dynamic_test_mapping 保留为独立实验组件，但不属于默认 Pipeline。
+- `dynamic_test_mapping` 保留为独立的可选组件，不属于默认流程。

@@ -9,7 +9,6 @@ from .api import (
     initialize,
     locate_target_test_to_source_code,
 )
-
 __all__ = [
     "InitializationResult",
     "TargetToSourceCodeAPI",
@@ -20,4 +19,14 @@ __all__ = [
     "get_translation_order",
     "get_translation_batch",
     "locate_target_test_to_source_code",
+    "RepoAnalyze",
 ]
+
+
+def __getattr__(name: str):
+    """Load the root-level facade only when it is requested."""
+    if name == "RepoAnalyze":
+        from repoanalyze import RepoAnalyze
+
+        return RepoAnalyze
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

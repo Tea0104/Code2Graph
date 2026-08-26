@@ -88,7 +88,7 @@ class TargetToSourceCodeAPI:
         target_test_file: str | None = None,
         strategy: str = "fusion",
         top_k_source_tests: int = 5,
-        top_k_source_functions: int = 5,
+        top_k_source_functions: int | None = 5,
         mask_names: bool = False,
     ) -> str:
         retrieval = self.source_tests.locate_source_tests(
@@ -121,7 +121,11 @@ class TargetToSourceCodeAPI:
                 seen_function_ids.add(static_hit["chunk_id"])
                 ranked_functions.append(enriched)
 
-        selected_functions = ranked_functions[:top_k_source_functions]
+        selected_functions = (
+            ranked_functions
+            if top_k_source_functions is None
+            else ranked_functions[:top_k_source_functions]
+        )
         return _join_function_codes(selected_functions)
 
 
@@ -134,7 +138,7 @@ def locate_source_code(
     target_test_file: str | None = None,
     strategy: str = "fusion",
     top_k_source_tests: int = 5,
-    top_k_source_functions: int = 5,
+    top_k_source_functions: int | None = 5,
     mask_names: bool = False,
     embedder_kind: str = "unixcoder",
     model_path: str | Path | None = None,
