@@ -111,7 +111,7 @@ pipeline = Code2GraphPipeline.from_artifact_dir(
     device="auto",
 )
 
-result = pipeline.locate_target_test_to_source_code(
+source_code = pipeline.locate_target_test_to_source_code(
     target_language="C++",
     target_test_code=target_test_code,
     target_test_name=target_test_name,
@@ -130,7 +130,7 @@ result = pipeline.locate_target_test_to_source_code(
 ```python
 from code2graph import locate_target_test_to_source_code
 
-result = locate_target_test_to_source_code(
+source_code = locate_target_test_to_source_code(
     artifact_dir="/path/to/source-repository/.code2graph",
     target_language="C++",
     target_test_code=target_test_code,
@@ -142,11 +142,7 @@ result = locate_target_test_to_source_code(
 
 ### 返回值
 
-- `source_tests`：RAG 找到的 Source-test 候选、排名和分数；
-- `source_functions`：静态映射得到的 Source function 位置与代码；
-- `confidence`：第一名检索分数；
-- `margin`：第一名与第二名的分数差；
-- `has_source_function`：是否得到可返回的 Source function。
+返回值是 Source function 的代码字符串。若链路定位到多个 Source functions，会按排名用空行拼接后返回；若没有定位到可返回函数，则返回空字符串。
 
 默认 `fusion` 同时使用 UniXcoder dense 检索和测试结构检索。结构检索比较测试
 名称、文件名、调用集合和常量集合。

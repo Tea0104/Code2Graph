@@ -122,14 +122,14 @@ pipeline = Code2GraphPipeline.from_artifact_dir(
     model_path="/path/to/unixcoder-base-nine",
 )
 
-result = pipeline.locate_target_test_to_source_code(
+source_code = pipeline.locate_target_test_to_source_code(
     target_language="C++",
     target_test_name="Calculator.Adds",
     target_test_code=(
         "TEST(Calculator, Adds) { EXPECT_EQ(add(1, 2), 3); }"
     ),
 )
-print(result["source_functions"])
+print(source_code)
 ```
 
 服务进程应复用一个 `Code2GraphPipeline` 实例，避免为每个测试重复加载模型。
