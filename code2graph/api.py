@@ -61,8 +61,8 @@ class Code2GraphPipeline:
         top_k_source_tests: int = 5,
         top_k_source_functions: int = 5,
         mask_names: bool = False,
-    ) -> dict[str, Any]:
-        """将一个 Target test 函数定位到候选 Source function 代码。"""
+    ) -> str:
+        """将一个 Target test 函数定位到 Source function 代码字符串。"""
         return self._mapping_api.locate_source_code(
             target_language=target_language,
             target_test_code=target_test_code,
@@ -141,11 +141,12 @@ def locate_target_test_to_source_code(
     model_path: str | Path | None = None,
     device: str = "auto",
     batch_size: int = 16,
-) -> dict[str, Any]:
+) -> str:
     """接口三：一次性执行 Target test -> Source code 查询。
 
     如果需要连续处理多个实时测试，应优先使用
     ``Code2GraphPipeline.from_artifact_dir``，避免每次重复加载模型。
+    返回值是匹配到的 Source function 代码字符串；多个函数按排名用空行拼接。
     """
     pipeline = Code2GraphPipeline.from_artifact_dir(
         artifact_dir,

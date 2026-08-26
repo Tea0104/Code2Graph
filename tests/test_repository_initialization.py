@@ -14,14 +14,19 @@ class RepositoryInitializationTest(unittest.TestCase):
             root = Path(directory) / "calculator"
             root.mkdir()
             (root / "calculator.py").write_text(
-                "def add(left, right):\n    return left + right\n",
+                "def add(left, right):\n"
+                "    return left + right\n\n"
+                "def subtract(left, right):\n"
+                "    return left - right\n",
                 encoding="utf-8",
             )
             tests = root / "tests"
             tests.mkdir()
             (tests / "test_calculator.py").write_text(
-                "from calculator import add\n\n"
-                "def test_add():\n    assert add(1, 2) == 3\n",
+                "from calculator import add, subtract\n\n"
+                "def test_add():\n"
+                "    assert add(1, 2) == 3\n"
+                "    assert subtract(3, 1) == 2\n",
                 encoding="utf-8",
             )
 
@@ -32,7 +37,7 @@ class RepositoryInitializationTest(unittest.TestCase):
 
             self.assertEqual(result.repository_id, "calculator")
             self.assertEqual(result.source_language, "Python")
-            self.assertEqual(result.source_function_count, 1)
+            self.assertEqual(result.source_function_count, 2)
             self.assertEqual(result.source_test_count, 1)
             self.assertNotIn("target", " ".join(result.artifacts).lower())
 
@@ -72,9 +77,22 @@ class RepositoryInitializationTest(unittest.TestCase):
                     "TEST(Calculator, Adds) { EXPECT_EQ(add(1, 2), 3); }"
                 ),
             )
-            self.assertTrue(located["has_source_function"])
-            self.assertEqual(located["source_functions"][0]["name"], "add")
-            self.assertIn("return left + right", located["source_functions"][0]["code"])
+            self.assertIsInstance(located, str)
+            self.assertIn("def add(left, right):", located)
+            self.assertIn("return left + right", located)
+
+            located_many = api.locate_source_code(
+                target_language="C++",
+                target_test_name="Calculator.AddsAndSubtracts",
+                target_test_code=(
+                    "TEST(Calculator, AddsAndSubtracts) { "
+                    "EXPECT_EQ(add(1, 2), 3); "
+                    "EXPECT_EQ(subtract(3, 1), 2); }"
+                ),
+            )
+            self.assertIn("def add(left, right):", located_many)
+            self.assertIn("def subtract(left, right):", located_many)
+            self.assertIn("\n\n", located_many)
 
 
 if __name__ == "__main__":

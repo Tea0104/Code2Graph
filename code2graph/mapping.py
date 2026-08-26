@@ -9,6 +9,15 @@ from test_mapping.models import FunctionChunk
 from test_mapping.source_function_mapping import SourceFunctionMappingAPI
 
 
+def _join_function_codes(functions: list[dict[str, Any]]) -> str:
+    codes = [
+        function["code"].strip()
+        for function in functions
+        if isinstance(function.get("code"), str) and function["code"].strip()
+    ]
+    return "\n\n".join(codes)
+
+
 class TargetToSourceCodeAPI:
     """Reusable Target-test-code to Source-function-code pipeline."""
 
@@ -81,7 +90,7 @@ class TargetToSourceCodeAPI:
         top_k_source_tests: int = 5,
         top_k_source_functions: int = 5,
         mask_names: bool = False,
-    ) -> dict[str, Any]:
+    ) -> str:
         retrieval = self.source_tests.locate_source_tests(
             project=self.repository_id,
             target_language=target_language,
@@ -93,14 +102,12 @@ class TargetToSourceCodeAPI:
             mask_names=mask_names,
         )
 
-        source_test_results: list[dict[str, Any]] = []
         ranked_functions: list[dict[str, Any]] = []
         seen_function_ids: set[str] = set()
         for test_hit in retrieval["hits"]:
             mapping = self.source_functions.lookup_result(
                 test_hit["source_test_id"], project=self.repository_id
             )
-            mapped_functions: list[dict[str, Any]] = []
             for static_hit in mapping["source_functions"]:
                 chunk = self.function_by_id.get(static_hit["chunk_id"])
                 enriched = {
@@ -109,38 +116,13 @@ class TargetToSourceCodeAPI:
                     "source_test_rank": test_hit["rank"],
                     "source_test_score": test_hit["score"],
                 }
-                mapped_functions.append(enriched)
                 if static_hit["chunk_id"] in seen_function_ids:
                     continue
                 seen_function_ids.add(static_hit["chunk_id"])
                 ranked_functions.append(enriched)
 
-            source_test_results.append(
-                {
-                    **test_hit,
-                    "mapping_status": mapping["status"],
-                    "mapping_method": mapping["resolver_method"],
-                    "source_functions": mapped_functions,
-                    "no_function": mapping["no_function"],
-                }
-            )
-
         selected_functions = ranked_functions[:top_k_source_functions]
-        return {
-            "schema_version": 1,
-            "direction": "target_test_code_to_source_test_to_source_function_code",
-            "repository_id": self.repository_id,
-            "source_language": self.source_language,
-            "target_language": retrieval["target_language"],
-            "strategy": retrieval["strategy"],
-            "used_strategies": retrieval["used_strategies"],
-            "confidence": retrieval["confidence"],
-            "margin": retrieval["margin"],
-            "target_test": retrieval["target_test"],
-            "source_tests": source_test_results,
-            "source_functions": selected_functions,
-            "has_source_function": bool(selected_functions),
-        }
+        return _join_function_codes(selected_functions)
 
 
 def locate_source_code(
@@ -158,7 +140,7 @@ def locate_source_code(
     model_path: str | Path | None = None,
     device: str = "auto",
     batch_size: int = 16,
-) -> dict[str, Any]:
+) -> str:
     """One-shot wrapper; reuse TargetToSourceCodeAPI for repeated queries."""
     api = TargetToSourceCodeAPI.from_artifact_dir(
         artifact_dir,
