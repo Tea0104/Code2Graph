@@ -24,6 +24,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Iterable
 
 from repository_analysis.dependencies import ImportExtractor, build_file_dependency_graph
 from repository_analysis.dependencies import line_of as _line_of
@@ -337,6 +338,137 @@ def _compute_ready(
         if all(dep in translated for dep in internal_deps):
             ready.append(node)
     return ready
+
+
+def _normalize_languages(languages: Iterable[str] | str | None = None) -> list[str]:
+    if languages is None:
+        result = ["python"]
+    elif isinstance(languages, str):
+        result = [lang.strip() for lang in languages.split(",") if lang.strip()]
+    else:
+        result = [lang.strip() for lang in languages if lang.strip()]
+
+    if not result:
+        raise ValueError("At least one language is required.")
+
+    unsupported = [lang for lang in result if lang not in LANGUAGE_EXTENSIONS]
+    if unsupported:
+        supported = ", ".join(sorted(LANGUAGE_EXTENSIONS))
+        raise ValueError(
+            f"Unsupported language(s): {', '.join(unsupported)}. "
+            f"Supported: {supported}"
+        )
+    return result
+
+
+def _build_translation_state(
+    source_path: str,
+    include_tests: bool = False,
+    languages: Iterable[str] | str | None = None,
+) -> tuple[Path, list[str], set[str], dict[str, list[str]], list[str]]:
+    source_root = Path(source_path).resolve()
+    if not source_root.is_dir():
+        raise ValueError(f"{source_root} is not a directory.")
+
+    normalized_languages = _normalize_languages(languages)
+    adjacency, all_nodes, edge_lines = build_dependency_graph(
+        source_root,
+        normalized_languages,
+        include_tests=include_tests,
+    )
+    sorted_order, _cycles, broken_edges = topological_sort(
+        adjacency,
+        all_nodes,
+        edge_lines,
+        normalized_languages,
+        source_root,
+    )
+    effective_adjacency = _effective_adjacency(adjacency, broken_edges)
+    return (
+        source_root,
+        normalized_languages,
+        all_nodes,
+        effective_adjacency,
+        sorted_order,
+    )
+
+
+def _normalize_translated_files(
+    source_root: Path,
+    all_nodes: set[str],
+    already: Iterable[str],
+) -> set[str]:
+    translated: set[str] = set()
+    unknown: list[str] = []
+
+    for value in already:
+        raw = str(value).strip()
+        if not raw:
+            continue
+
+        normalized = raw.replace("\\", "/")
+        path = Path(raw)
+        if path.is_absolute():
+            try:
+                normalized = path.resolve().relative_to(source_root).as_posix()
+            except ValueError:
+                unknown.append(raw)
+                continue
+
+        if normalized in all_nodes:
+            translated.add(normalized)
+        else:
+            unknown.append(raw)
+
+    if unknown:
+        raise ValueError(
+            "Unknown translated file(s): "
+            + ", ".join(unknown)
+            + ". Use paths returned by get_order_information()."
+        )
+    return translated
+
+
+def get_order_information(
+    source_path: str,
+    include_tests: bool = False,
+) -> dict[str, object]:
+    """
+    Return the complete dependency-first translation order for source_path.
+
+    The returned files are repository-relative POSIX paths, matching the CLI
+    output from this module.
+    """
+    _source_root, _languages, _all_nodes, _adjacency, sorted_order = (
+        _build_translation_state(source_path, include_tests=include_tests)
+    )
+    return {
+        "number": len(sorted_order),
+        "files": sorted_order,
+    }
+
+
+def get_translation_order(
+    source_path: str,
+    number: int,
+    already: list[str],
+    include_tests: bool = False,
+) -> list[str]:
+    """
+    Return the next files in global translation order.
+
+    The list follows the global topological order and excludes files listed in
+    already.
+    """
+    if number < 0:
+        raise ValueError("number must be non-negative.")
+
+    source_root, _languages, all_nodes, _adjacency, sorted_order = (
+        _build_translation_state(source_path, include_tests=include_tests)
+    )
+    translated = _normalize_translated_files(source_root, all_nodes, already)
+    remaining = [path for path in sorted_order if path not in translated]
+    return remaining[:number]
 
 
 class _TranslateShell(cmd.Cmd):

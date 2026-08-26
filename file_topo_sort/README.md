@@ -57,6 +57,32 @@ JSON 保留原有字段，并增加功能依赖链：
 - `cycles`：检测到的循环依赖；
 - `broken_edges`：为生成可执行顺序而断开的循环依赖边。
 
+## Python 接口
+
+如果要在服务层或其他模块里暴露排序能力，可以直接导入两个接口：
+
+```python
+from file_topo_sort import get_order_information, get_translation_order
+
+info = get_order_information("./my-python-project")
+# {"number": 3, "files": ["base.py", "service.py", "app.py"]}
+
+next_files = get_translation_order(
+    "./my-python-project",
+    number=2,
+    already=["base.py"],
+)
+# ["service.py", "app.py"]
+```
+
+| 接口 | 返回 |
+|---|---|
+| `get_order_information(source_path: str, include_tests: bool = False)` | `{"number": int, "files": list[str]}` |
+| `get_translation_order(source_path: str, number: int, already: list[str], include_tests: bool = False)` | `list[str]` |
+
+返回的文件路径是相对 `source_path` 的 POSIX 路径。`already` 应使用
+`get_order_information()` 返回的路径，或位于 `source_path` 内部的绝对路径。
+
 ## 交互模式
 
 ```powershell
