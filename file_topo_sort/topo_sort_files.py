@@ -29,7 +29,7 @@ from typing import Iterable
 from repository_analysis.dependencies import ImportExtractor, build_file_dependency_graph
 from repository_analysis.dependencies import line_of as _line_of
 from repository_analysis.repository import is_test_path
-from repository_analysis.languages import normalize_languages
+from repository_analysis.languages import LANGUAGE_EXTENSIONS, normalize_languages
 
 # Compatibility export for existing callers; implementation lives in repository_analysis.
 DependencyExtractor = ImportExtractor

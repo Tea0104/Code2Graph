@@ -57,7 +57,11 @@ python -m pip install -r requirements-unixcoder.txt
 ```python
 from repoanalyze import RepoAnalyze
 
-repo = RepoAnalyze()
+repo = RepoAnalyze(
+    embedder_kind="unixcoder",
+    model_path="/path/to/unixcoder-base-nine",
+    device="auto",
+)
 ```
 
 也可以使用兼容导出：
@@ -71,14 +75,13 @@ from code2graph import RepoAnalyze
 ```python
 repo.initrepo(
     source_path="/path/to/source-repository",
-    embedder_kind="unixcoder",
-    model_path="/path/to/unixcoder-base-nine",
-    device="auto",
     source_language="Python",  # 可选；不传时自动识别
 )
 ```
 
-只有 `source_path` 是必须参数。初始化方法不返回业务结果，生成的状态保存在
+只有 `source_path` 是必须参数。UniXcoder 模型路径、设备等可复用配置建议在
+`RepoAnalyze(...)` 中设置；`initrepo(...)` 仍支持传入这些参数用于单次覆盖。
+初始化方法不返回业务结果，生成的状态保存在
 `source_path/.code2graph/` 中。初始化会完成代码图、Source function 和 Source test
 Chunk、Embedding 索引、Source test 到 Source function 的静态映射以及翻译顺序表。
 

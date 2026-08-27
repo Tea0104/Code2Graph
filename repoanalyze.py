@@ -27,10 +27,21 @@ DEFAULT_BATCH_SIZE = 16
 class RepoAnalyze:
     """面向 Agent 的仓库级统一门面。"""
 
-    def __init__(self) -> None:
-        self.embedder_kind = "unixcoder"
-        self.model_path: str | Path | None = None
-        self.device = "auto"
+    def __init__(
+        self,
+        *,
+        embedder_kind: str = "unixcoder",
+        model_path: str | Path | None = None,
+        device: str = "auto",
+    ) -> None:
+        """保存可复用运行配置。
+
+        ``initrepo`` 仍负责按仓库生成产物；模型类型、模型路径和设备这类
+        可跨仓库复用的配置由入口对象统一持有。
+        """
+        self.embedder_kind = embedder_kind
+        self.model_path = model_path
+        self.device = device
         self._initialization: InitializationResult | None = None
         self._source_path: Path | None = None
         self._artifact_dir: Path | None = None
@@ -39,23 +50,21 @@ class RepoAnalyze:
     def initrepo(
         self,
         source_path: str | Path,
-        embedder_kind: str = "unixcoder",
+        embedder_kind: str | None = None,
         model_path: str | Path | None = None,
-        device: str = "auto",
+        device: str | None = None,
         source_language: str | None = None,
     ) -> None:
         """初始化 Source 仓库；只有 ``source_path`` 是必须参数。"""
-        self.embedder_kind, self.model_path, self.device = (
-            embedder_kind,
-            model_path,
-            device,
-        )
+        self.embedder_kind = embedder_kind or self.embedder_kind
+        self.model_path = self.model_path if model_path is None else model_path
+        self.device = device or self.device
         result = initialize_repository(
             source_path,
             source_language=source_language,
-            embedder_kind=embedder_kind,
-            model_path=model_path,
-            device=device,
+            embedder_kind=self.embedder_kind,
+            model_path=self.model_path,
+            device=self.device,
             batch_size=DEFAULT_BATCH_SIZE,
         )
         self._remember_repository(result)
