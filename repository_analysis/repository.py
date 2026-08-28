@@ -29,6 +29,12 @@ IGNORED_DIR_NAMES = frozenset(
     }
 )
 TEST_DIR_NAMES = frozenset({"test", "tests", "public_test", "public_tests", "spec", "specs"})
+AUXILIARY_DIR_NAMES = frozenset(
+    {"bench", "benchmark", "benchmarks", "demos", "example", "examples"}
+)
+DEMO_AUXILIARY_PARENT_DIR_NAMES = frozenset(
+    {"doc", "docs", "documentation", "example", "examples", "sample", "samples"}
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,21 @@ def is_test_path(path: Path, root: Path) -> bool:
     )
 
 
+def is_auxiliary_path(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    directories = [part.lower() for part in relative.parts[:-1]]
+    if any(part in AUXILIARY_DIR_NAMES for part in directories):
+        return True
+    for index, part in enumerate(directories):
+        if part != "demo":
+            continue
+        if index == 0:
+            return True
+        if directories[index - 1] in DEMO_AUXILIARY_PARENT_DIR_NAMES:
+            return True
+    return False
+
+
 def scan_repository(
     source_root: str | Path,
     languages: str | Iterable[str] | None = None,
@@ -84,7 +105,8 @@ def scan_repository(
                     path=path,
                     relative_path=path.relative_to(root).as_posix(),
                     language=language,
-                    is_test=is_test_path(path, root),
+                    is_test=is_test_path(path, root)
+                    or is_auxiliary_path(path, root),
                 )
             )
             break
