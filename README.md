@@ -85,8 +85,9 @@ repo.initrepo(
 `source_path/.code2graph/` 中。初始化会完成代码图、Source function 和 Source test
 Chunk、Embedding 索引、Source test 到 Source function 的静态映射以及翻译顺序表。
 
-如果 Agent 没有主动调用 `initrepo`，后面的两个业务接口会自动检查
-`.code2graph/manifest.json`；缺少该文件时会使用默认参数自动初始化。
+`get_translation_order` 只依赖静态文件拓扑排序，不要求先运行 `initrepo`。
+`target_test_to_source_code` 会自动检查 `.code2graph/manifest.json`；缺少该文件时会
+使用默认参数自动初始化。
 
 ### 3. 获取翻译顺序
 
@@ -98,12 +99,23 @@ files = repo.get_translation_order(
 )
 ```
 
+如果同一个 `RepoAnalyze` 对象已经通过 `initrepo(...)`、`check(...)` 或前一次
+`get_translation_order(source_path=...)` 记录过仓库，也可以省略 `source_path`：
+
+```python
+files = repo.get_translation_order(
+    number=2,
+    already=["config.py", "model.py"],
+)
+```
+
 参数：
 
 - `source_path`：Source 仓库路径；
 - `number`：希望接下来翻译的文件数量；
 - `already`：已经翻译完成的文件；
 - `include_tests`：可选，是否把测试文件纳入顺序，默认 `False`。
+- `languages` / `source_language`：可选，显式指定 Source 语言；不传时自动识别。
 
 返回值是 `list[str]`。接口根据静态顺序表排除 `already`，再返回接下来的文件：
 

@@ -26,10 +26,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Iterable
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from repository_analysis.dependencies import ImportExtractor, build_file_dependency_graph
 from repository_analysis.dependencies import line_of as _line_of
-from repository_analysis.repository import is_test_path
-from repository_analysis.languages import LANGUAGE_EXTENSIONS, normalize_languages
+from repository_analysis.repository import detect_languages, is_test_path
+from repository_analysis.languages import normalize_languages
 
 # Compatibility export for existing callers; implementation lives in repository_analysis.
 DependencyExtractor = ImportExtractor
@@ -340,25 +344,24 @@ def _compute_ready(
     return ready
 
 
-def _normalize_languages(languages: Iterable[str] | str | None = None) -> list[str]:
+def _normalize_languages(
+    languages: Iterable[str] | str | None = None,
+    *,
+    source_root: Path | None = None,
+) -> list[str]:
     if languages is None:
-        result = ["python"]
+        if source_root is None:
+            result = ["python"]
+        else:
+            result = [language for language, _count in detect_languages(source_root)]
+            if not result:
+                raise ValueError(f"No supported source files found in {source_root}.")
     elif isinstance(languages, str):
         result = [lang.strip() for lang in languages.split(",") if lang.strip()]
     else:
         result = [lang.strip() for lang in languages if lang.strip()]
 
-    if not result:
-        raise ValueError("At least one language is required.")
-
-    unsupported = [lang for lang in result if lang not in LANGUAGE_EXTENSIONS]
-    if unsupported:
-        supported = ", ".join(sorted(LANGUAGE_EXTENSIONS))
-        raise ValueError(
-            f"Unsupported language(s): {', '.join(unsupported)}. "
-            f"Supported: {supported}"
-        )
-    return result
+    return normalize_languages(result)
 
 
 def _build_translation_state(
@@ -370,7 +373,7 @@ def _build_translation_state(
     if not source_root.is_dir():
         raise ValueError(f"{source_root} is not a directory.")
 
-    normalized_languages = _normalize_languages(languages)
+    normalized_languages = _normalize_languages(languages, source_root=source_root)
     adjacency, all_nodes, edge_lines = build_dependency_graph(
         source_root,
         normalized_languages,
@@ -432,6 +435,7 @@ def _normalize_translated_files(
 def get_order_information(
     source_path: str,
     include_tests: bool = False,
+    languages: Iterable[str] | str | None = None,
 ) -> dict[str, object]:
     """
     Return the complete dependency-first translation order for source_path.
@@ -440,7 +444,11 @@ def get_order_information(
     output from this module.
     """
     _source_root, _languages, _all_nodes, _adjacency, sorted_order = (
-        _build_translation_state(source_path, include_tests=include_tests)
+        _build_translation_state(
+            source_path,
+            include_tests=include_tests,
+            languages=languages,
+        )
     )
     return {
         "number": len(sorted_order),
@@ -453,6 +461,7 @@ def get_translation_order(
     number: int,
     already: list[str],
     include_tests: bool = False,
+    languages: Iterable[str] | str | None = None,
 ) -> list[str]:
     """
     Return the next files in global translation order.
@@ -464,7 +473,11 @@ def get_translation_order(
         raise ValueError("number must be non-negative.")
 
     source_root, _languages, all_nodes, _adjacency, sorted_order = (
-        _build_translation_state(source_path, include_tests=include_tests)
+        _build_translation_state(
+            source_path,
+            include_tests=include_tests,
+            languages=languages,
+        )
     )
     translated = _normalize_translated_files(source_root, all_nodes, already)
     remaining = [path for path in sorted_order if path not in translated]

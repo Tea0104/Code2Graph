@@ -13,15 +13,24 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
-from code2graph.api import Code2GraphPipeline
-from code2graph.initialization import InitializationResult, initialize_repository
+from code2graph.results import InitializationResult
 from file_topo_sort import get_translation_order as _get_translation_order
 
 
 # 初始化索引时每次送入模型的 Chunk 数量；不是翻译文件数量。
 DEFAULT_BATCH_SIZE = 16
+
+if TYPE_CHECKING:
+    from code2graph.api import Code2GraphPipeline
+
+
+def initialize_repository(*args, **kwargs) -> InitializationResult:
+    """Lazy wrapper for the full initialization pipeline."""
+    from code2graph.initialization import initialize_repository as _initialize_repository
+
+    return _initialize_repository(*args, **kwargs)
 
 
 class RepoAnalyze:
@@ -100,19 +109,35 @@ class RepoAnalyze:
 
     def get_translation_order(
         self,
-        source_path: str | Path,
-        number: int,
+        source_path: str | Path | None = None,
+        number: int = 1,
         already: Sequence[str | Path] = (),
         *,
         include_tests: bool = False,
+        languages: str | Sequence[str] | None = None,
+        source_language: str | None = None,
     ) -> list[str]:
-        """检查仓库后，返回静态顺序中接下来的 ``number`` 个文件。"""
-        self.check(source_path)
+        """返回静态顺序中接下来的 ``number`` 个文件。
+
+        ``source_path`` 可以显式传入；若已通过 ``initrepo`` 或 ``check`` 记录过
+        仓库，也可以省略。
+        """
+        if source_path is None:
+            if self._source_path is None:
+                raise ValueError(
+                    "source_path is required before the repository has been initialized or checked."
+                )
+            root = self._source_path
+        else:
+            root = Path(source_path).expanduser().resolve()
+            self._source_path = root
+
         return _get_translation_order(
-            str(Path(source_path).expanduser().resolve()),
+            str(root),
             number=number,
             already=[str(path) for path in already],
             include_tests=include_tests,
+            languages=languages or source_language,
         )
 
     def target_test_to_source_code(
@@ -124,6 +149,8 @@ class RepoAnalyze:
         """返回最佳 Source test 对应的全部 Source function 代码。"""
         self.check(source_path)
         if self._query_pipeline is None:
+            from code2graph.api import Code2GraphPipeline
+
             self._query_pipeline = Code2GraphPipeline.from_artifact_dir(
                 self._require_artifact_dir(),
                 embedder_kind=self.embedder_kind,
