@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 from typing import Any
 
 from repository_analysis.languages import normalize_language
+from .results import InitializationResult
 from file_topo_sort import analyze_project
 from test_mapping.embedding import make_embedder
 from test_mapping.index import VectorIndex
@@ -18,25 +18,6 @@ from test_mapping.source_function_mapping import (
     write_source_function_mapping,
 )
 from tree_sitter_graph import extract_repository
-
-
-@dataclass(frozen=True)
-class InitializationResult:
-    schema_version: int
-    repository_id: str
-    source_root: str
-    source_language: str
-    artifact_dir: str
-    source_file_count: int
-    source_test_file_count: int
-    source_function_count: int
-    source_test_count: int
-    artifacts: dict[str, str | None]
-    reports: dict[str, Any]
-    warnings: list[str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 def _write_json(path: Path, value: Any) -> None:

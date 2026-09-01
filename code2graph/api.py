@@ -14,8 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .initialization import InitializationResult, initialize_repository
-from .mapping import TargetToSourceCodeAPI
+from .results import InitializationResult
 from file_topo_sort import analyze_project, plan_translation_batch
 
 
@@ -26,7 +25,7 @@ class Code2GraphPipeline:
     这样不会为每一次实时测试请求重复加载向量索引和 UniXcoder 模型。
     """
 
-    def __init__(self, mapping_api: TargetToSourceCodeAPI) -> None:
+    def __init__(self, mapping_api: Any) -> None:
         self._mapping_api = mapping_api
 
     @classmethod
@@ -40,6 +39,8 @@ class Code2GraphPipeline:
         batch_size: int = 16,
     ) -> "Code2GraphPipeline":
         """从 ``initialize`` 生成的 ``.code2graph`` 目录加载可查询 Pipeline。"""
+        from .mapping import TargetToSourceCodeAPI
+
         return cls(
             TargetToSourceCodeAPI.from_artifact_dir(
                 artifact_dir,
@@ -85,6 +86,8 @@ def initialize(
     建立 Source test 向量索引、生成 Source test -> Source function 静态映射，
     并保存文件级翻译顺序。Target 仓库不是初始化的必需输入。
     """
+    from .initialization import initialize_repository
+
     return initialize_repository(source_repository, **kwargs)
 
 

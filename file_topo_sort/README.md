@@ -67,21 +67,32 @@ from file_topo_sort import get_order_information, get_translation_order
 info = get_order_information("./my-python-project")
 # {"number": 3, "files": ["base.py", "service.py", "app.py"]}
 
+cpp_info = get_order_information("./my-cpp-project", languages="C++")
+
 next_files = get_translation_order(
     "./my-python-project",
     number=2,
     already=["base.py"],
 )
 # ["service.py", "app.py"]
+
+cpp_next_files = get_translation_order(
+    "./my-cpp-project",
+    number=2,
+    already=[],
+    languages="cpp",
+)
 ```
 
 | 接口 | 返回 |
 |---|---|
-| `get_order_information(source_path: str, include_tests: bool = False)` | `{"number": int, "files": list[str]}` |
-| `get_translation_order(source_path: str, number: int, already: list[str], include_tests: bool = False)` | `list[str]` |
+| `get_order_information(source_path, include_tests=False, languages=None)` | `{"number": int, "files": list[str]}` |
+| `get_translation_order(source_path, number, already, include_tests=False, languages=None)` | `list[str]` |
 
 返回的文件路径是相对 `source_path` 的 POSIX 路径。`already` 应使用
 `get_order_information()` 返回的路径，或位于 `source_path` 内部的绝对路径。
+不传 `languages` 时会从仓库文件后缀自动识别；也可以显式传入 `python`、`cpp`、
+`C++` 等语言名或别名。
 
 ## 交互模式
 
