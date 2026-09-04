@@ -1,4 +1,4 @@
-# Python caches and test artifacts
+# Python caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -14,29 +14,17 @@ venv/
 .vscode/
 .idea/
 
-# Code2Graph generated artifacts
+# Generated repository artifacts
 .code2graph/
-build/
-output/
-outputs/
-indexes/
-test_mapping_outputs/
-test_mapping_indexes/
 .translate_state.json
-codeql_db/
-codeql_results/
 
-# Local datasets, models, and adjacent program checkouts
+# Local datasets and models
 data/
 dataset/
 datasets/
-organized_*/
 models/
-RepoDoc/
-test_cpp/
-test_fixtures/
 
-# Transfer and backup archives
+# Archives
 *.bundle
 *.tar
 *.tar.gz

@@ -1,31 +1,30 @@
-"""Code2Graph 对外统一入口。
+"""Code2Graph 的唯一对外入口。
 
-调用流程只有三步：
-
-1. ``initrepo``：为 Source 仓库建立代码图、Chunk、索引和映射；
-2. ``get_translation_order``：根据静态顺序表返回下一批文件；
-3. ``target_test_to_source_code``：用 Target test 找到 Source code。
-
-本文件只负责检查状态和转发调用，具体解析、排序、Embedding 和映射
-仍由仓库中的其他组件完成。
+外部程序只需要导入本文件中的 ``RepoAnalyze``。三个公开能力分别由
+``initrepo``、``translation_order`` 和 ``target_test_to_source`` 实现，
+这里负责把它们组合成一个清晰的使用入口。
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Sequence
 
-from code2graph.api import Code2GraphPipeline
-from code2graph.initialization import InitializationResult, initialize_repository
-from file_topo_sort import get_translation_order as _get_translation_order
-
-
-# 初始化索引时每次送入模型的 Chunk 数量；不是翻译文件数量。
-DEFAULT_BATCH_SIZE = 16
+from common.artifacts import check_required_artifacts, get_artifact_paths, load_manifest
+from common.embedding import make_embedder
+from common.index import load_source_test_index, search_source_tests
+from initrepo.pipeline import initialize_repository
+from target_test_to_source.mapping import (
+    join_source_function_code,
+    load_source_functions,
+    load_source_test_mapping,
+    lookup_source_function_ids,
+)
 
 
 class RepoAnalyze:
-    """面向 Agent 的仓库级统一门面。"""
+    """面向外部调用的仓库分析接口。"""
 
     def __init__(
         self,
@@ -33,70 +32,43 @@ class RepoAnalyze:
         embedder_kind: str = "unixcoder",
         model_path: str | Path | None = None,
         device: str = "auto",
+        batch_size: int = 16,
+        source_language: str | None = None,
     ) -> None:
-        """保存可复用运行配置。
-
-        ``initrepo`` 仍负责按仓库生成产物；模型类型、模型路径和设备这类
-        可跨仓库复用的配置由入口对象统一持有。
-        """
+        # 保存一次配置，后面的仓库初始化和查询都复用它。
         self.embedder_kind = embedder_kind
         self.model_path = model_path
         self.device = device
-        self._initialization: InitializationResult | None = None
-        self._source_path: Path | None = None
-        self._artifact_dir: Path | None = None
-        self._query_pipeline: Code2GraphPipeline | None = None
+        self.batch_size = batch_size
+        self.source_language = source_language
+        self._state: dict | None = None
+        self._embedder = None
 
-    def initrepo(
-        self,
-        source_path: str | Path,
-        embedder_kind: str | None = None,
-        model_path: str | Path | None = None,
-        device: str | None = None,
-        source_language: str | None = None,
-    ) -> None:
-        """初始化 Source 仓库；只有 ``source_path`` 是必须参数。"""
-        self.embedder_kind = embedder_kind or self.embedder_kind
-        self.model_path = self.model_path if model_path is None else model_path
-        self.device = device or self.device
-        result = initialize_repository(
+    def initrepo(self, source_path: str | Path) -> None:
+        """扫描仓库，并生成后续接口需要的七个核心产物。"""
+        initialize_repository(
             source_path,
-            source_language=source_language,
+            source_language=self.source_language,
             embedder_kind=self.embedder_kind,
             model_path=self.model_path,
             device=self.device,
-            batch_size=DEFAULT_BATCH_SIZE,
+            batch_size=self.batch_size,
         )
-        self._remember_repository(result)
+        # 初始化可能覆盖旧文件，下一次查询必须重新读取新结果。
+        self._state = None
 
-    def check(
-        self,
-        source_path: str | Path,
-        *,
-        embedder_kind: str | None = None,
-        model_path: str | Path | None = None,
-        device: str | None = None,
-        source_language: str | None = None,
-    ) -> None:
-        """检查 ``.code2graph``；缺失或中断时自动调用 ``initrepo``。"""
-        root = Path(source_path).expanduser().resolve()
-        artifact_dir = root / ".code2graph"
-        if not (artifact_dir / "manifest.json").is_file():
-            self.initrepo(
-                root,
-                embedder_kind=embedder_kind or self.embedder_kind,
-                model_path=self.model_path if model_path is None else model_path,
-                device=device or self.device,
-                source_language=source_language,
-            )
-            return
+    def check(self, source_path: str | Path) -> None:
+        """检查产物；缺少或损坏时自动初始化。"""
+        paths = get_artifact_paths(source_path)
+        if not check_required_artifacts(paths):
+            self.initrepo(source_path)
 
-        if self._source_path != root or self._artifact_dir != artifact_dir:
-            self._source_path, self._artifact_dir = root, artifact_dir
-            self._query_pipeline = None
-        self.embedder_kind = embedder_kind or self.embedder_kind
-        self.model_path = self.model_path if model_path is None else model_path
-        self.device = device or self.device
+    def get_all_translation_files(self, source_path: str | Path) -> list[str]:
+        """返回初始化时保存的全部文件翻译顺序。"""
+        self.check(source_path)
+        order_path = get_artifact_paths(source_path)["translation_order"]
+        payload = json.loads(order_path.read_text(encoding="utf-8"))
+        return payload["translation_order"]
 
     def get_translation_order(
         self,
@@ -106,14 +78,24 @@ class RepoAnalyze:
         *,
         include_tests: bool = False,
     ) -> list[str]:
-        """检查仓库后，返回静态顺序中接下来的 ``number`` 个文件。"""
+        """从固定顺序表中排除已翻译文件，并返回下一批文件。"""
+        if number < 0:
+            raise ValueError("number 不能是负数")
         self.check(source_path)
-        return _get_translation_order(
-            str(Path(source_path).expanduser().resolve()),
-            number=number,
-            already=[str(path) for path in already],
-            include_tests=include_tests,
-        )
+        order_path = get_artifact_paths(source_path)["translation_order"]
+        payload = json.loads(order_path.read_text(encoding="utf-8"))
+        order = payload["translation_order"]
+
+        # 把 already 统一成顺序表使用的仓库相对路径。
+        root = Path(source_path).expanduser().resolve()
+        translated: set[str] = set()
+        for value in already:
+            path = Path(value).expanduser()
+            if path.is_absolute():
+                path = path.resolve().relative_to(root)
+            translated.add(path.as_posix())
+
+        return [path for path in order if path not in translated][:number]
 
     def target_test_to_source_code(
         self,
@@ -121,33 +103,55 @@ class RepoAnalyze:
         target_language: str,
         target_test_code: str,
     ) -> str:
-        """返回最佳 Source test 对应的全部 Source function 代码。"""
+        """检索最相近的 Source test，并返回它对应的 Source function 代码。"""
         self.check(source_path)
-        if self._query_pipeline is None:
-            self._query_pipeline = Code2GraphPipeline.from_artifact_dir(
-                self._require_artifact_dir(),
-                embedder_kind=self.embedder_kind,
-                model_path=self.model_path,
-                device=self.device,
-                batch_size=DEFAULT_BATCH_SIZE,
-            )
-        return self._query_pipeline.locate_target_test_to_source_code(
-            target_language=target_language,
-            target_test_code=target_test_code,
-            top_k_source_tests=1,
-            top_k_source_functions=None,
+        artifact_dir = get_artifact_paths(source_path)["root"]
+        state = self._load_repository_state(artifact_dir)
+        query_text = f"Language: {target_language}\nCode:\n{target_test_code}"
+        matches = search_source_tests(
+            state["source_test_index"],
+            query_text,
+            self._embedder,
+            project=state["repository_id"],
+            top_k=1,
         )
+        if not matches:
+            return ""
 
-    def _remember_repository(self, result: InitializationResult) -> None:
-        self._initialization = result
-        self._source_path = Path(result.source_root)
-        self._artifact_dir = Path(result.artifact_dir)
-        self._query_pipeline = None
+        function_ids = lookup_source_function_ids(
+            matches[0]["source_test_id"],
+            state["source_test_to_source_function"],
+        )
+        return join_source_function_code(function_ids, state["source_functions"])
 
-    def _require_artifact_dir(self) -> Path:
-        if self._artifact_dir is None:
-            raise RuntimeError("Repository artifacts are not initialized.")
-        return self._artifact_dir
+    def _load_repository_state(self, artifact_dir: Path) -> dict:
+        # 同一个 RepoAnalyze 实例重复查询时，复用已经加载的索引和模型。
+        if self._state is not None and self._state["artifact_root"] == artifact_dir:
+            return self._state
 
+        paths = get_artifact_paths(artifact_dir.parent)
+        manifest = load_manifest(paths["manifest"])
+        self._embedder = make_embedder(
+            self.embedder_kind,
+            model_path=self.model_path,
+            device=self.device,
+            batch_size=self.batch_size,
+        )
+        self._state = {
+            "artifact_root": artifact_dir,
+            "repository_id": manifest["repository_id"],
+            "source_language": manifest["source_language"],
+            "source_test_index": load_source_test_index(
+                paths["source_test_vectors"],
+                paths["source_test_chunks"],
+                paths["source_test_index_manifest"],
+                self._embedder,
+            ),
+            "source_functions": load_source_functions(paths["source_functions"]),
+            "source_test_to_source_function": load_source_test_mapping(
+                paths["source_test_mapping"]
+            ),
+        }
+        return self._state
 
 __all__ = ["RepoAnalyze"]
