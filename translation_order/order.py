@@ -34,7 +34,7 @@ def _dependencies(root: Path, language: str, files: list[str]) -> dict[str, set[
         path = root / relative
         source = path.read_text(encoding="utf-8", errors="replace")
         targets: list[str | None]
-        if language == "Python":
+        if language == "python":
             modules = [item[0] or item[1] for item in re.findall(
                 r"^\s*(?:from\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+import|import\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*))",
                 source,

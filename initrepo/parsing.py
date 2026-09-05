@@ -108,7 +108,7 @@ def _test_chunk(
     qualified_name: str, code: str, start_line: int, end_line: int,
     framework: str, parent: str | None = None, fixture: str | None = None,
     imports: list[str] | None = None, calls: list[str] | None = None,
-    helpers: list[str] | None = None,
+    helpers: list[str] | None = None, helper_calls: list[str] | None = None,
 ) -> Chunk:
     return {
         "chunk_id": chunk_id, "project": project, "language": language,
@@ -116,6 +116,7 @@ def _test_chunk(
         "code": code, "start_line": start_line, "end_line": end_line,
         "framework": framework, "parent": parent, "fixture": fixture,
         "imports": imports or [], "calls": calls or [], "helpers": helpers or [],
+        "helper_calls": helper_calls or [],
         "metadata": {},
     }
 
@@ -153,13 +154,16 @@ def extract_python_tests(path: Path, root: Path, project: str) -> list[Chunk]:
     relative = _relative(path, root)
     imports = [_text(source, node).strip() for node in tree.root_node.named_children
                if node.type in {"import_statement", "import_from_statement"}]
-    helpers = {
-        _name(node, source): _text(source, node)
-        for node in _walk(tree.root_node)
-        if node.type == "function_definition"
-        and _name(node, source)
-        and not _name(node, source).startswith("test_")
-    }
+    helper_code: dict[str, str] = {}
+    helper_calls: dict[str, list[str]] = {}
+    for node in _walk(tree.root_node):
+        if node.type != "function_definition":
+            continue
+        name = _name(node, source)
+        if not name or name.startswith("test_"):
+            continue
+        helper_code[name] = _text(source, node)
+        helper_calls[name] = _python_calls(node, source)
     result: list[Chunk] = []
     for node in _walk(tree.root_node):
         if node.type != "function_definition":
@@ -170,7 +174,13 @@ def extract_python_tests(path: Path, root: Path, project: str) -> list[Chunk]:
         parent = _python_parent(node, source)
         qualified = _qualified(parent, name)
         calls = _python_calls(node, source)
-        helper_codes = [helpers[value] for value in calls if value in helpers]
+        helper_codes = [helper_code[value] for value in calls if value in helper_code]
+        nested_calls = [
+            call
+            for value in calls
+            if value in helper_calls
+            for call in helper_calls[value]
+        ]
         result.append(_test_chunk(
             chunk_id=f"{project}:Python:{relative}:{qualified}:{node.start_point.row + 1}",
             project=project,
@@ -187,6 +197,7 @@ def extract_python_tests(path: Path, root: Path, project: str) -> list[Chunk]:
             imports=imports,
             calls=calls,
             helpers=helper_codes,
+            helper_calls=nested_calls,
         ))
     return result
 
@@ -279,6 +290,18 @@ def extract_cpp_tests(path: Path, root: Path, project: str) -> list[Chunk]:
     source, tree = _parse(path, "C++")
     relative = _relative(path, root)
     includes = re.findall(r"(?m)^\s*#\s*include\s*[<\"][^>\"]+[>\"]", source)
+    helper_code: dict[str, str] = {}
+    helper_calls: dict[str, list[str]] = {}
+    for node in _walk(tree.root_node):
+        if node.type != "function_definition":
+            continue
+        declarator = node.child_by_field_name("declarator")
+        fn_name, _ = _cpp_function_name(_text(source, declarator) if declarator else "")
+        if not fn_name or fn_name in _CPP_TEST_MACROS or "test" in fn_name.lower() or fn_name == "main":
+            continue
+        helper_code[fn_name] = _text(source, node)
+        helper_calls[fn_name] = _cpp_calls(_text(source, node))
+
     result: list[Chunk] = []
     macro_pattern = re.compile(r"\b([A-Z][A-Z_]*)\s*\(([^()]*)\)\s*\{")
     for match in macro_pattern.finditer(source):
@@ -291,6 +314,14 @@ def extract_cpp_tests(path: Path, root: Path, project: str) -> list[Chunk]:
         name = ".".join(args) if args else match.group(1)
         code = source[match.start():end]
         start = source.count("\n", 0, match.start()) + 1
+        calls = _cpp_calls(code)
+        helper_codes = [helper_code[value] for value in calls if value in helper_code]
+        nested_calls = [
+            call
+            for value in calls
+            if value in helper_calls
+            for call in helper_calls[value]
+        ]
         result.append(_test_chunk(
             chunk_id=f"{project}:C++:{relative}:{name}:{start}",
             project=project,
@@ -303,7 +334,9 @@ def extract_cpp_tests(path: Path, root: Path, project: str) -> list[Chunk]:
             end_line=source.count("\n", 0, end) + 1,
             framework=match.group(1),
             imports=includes,
-            calls=_cpp_calls(code),
+            calls=calls,
+            helpers=helper_codes,
+            helper_calls=nested_calls,
         ))
     if result:
         return result
@@ -314,6 +347,14 @@ def extract_cpp_tests(path: Path, root: Path, project: str) -> list[Chunk]:
         declarator = node.child_by_field_name("declarator")
         name, _ = _cpp_function_name(_text(source, declarator) if declarator else "")
         if name and ("test" in name.lower() or name == "main"):
+            calls = _cpp_calls(_text(source, node))
+            helper_codes = [helper_code[value] for value in calls if value in helper_code]
+            nested_calls = [
+                call
+                for value in calls
+                if value in helper_calls
+                for call in helper_calls[value]
+            ]
             result.append(_test_chunk(
                 chunk_id=f"{project}:C++:{relative}:{name}:{node.start_point.row + 1}",
                 project=project,
@@ -326,7 +367,9 @@ def extract_cpp_tests(path: Path, root: Path, project: str) -> list[Chunk]:
                 end_line=node.end_point.row + 1,
                 framework="plain_function",
                 imports=includes,
-                calls=_cpp_calls(_text(source, node)),
+                calls=calls,
+                helpers=helper_codes,
+                helper_calls=nested_calls,
             ))
     return result
 

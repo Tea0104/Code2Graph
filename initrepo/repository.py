@@ -24,7 +24,7 @@ IGNORED_DIRS = {
     "build", "dist", "coverage", "node_modules", "site-packages",
 }
 TEST_DIRS = {"test", "tests", "public_test", "public_tests", "spec", "specs"}
-AUXILIARY_DIRS = {"bench", "benchmark", "benchmarks", "examples", "demos"}
+AUXILIARY_DIRS = {"bench", "benchmark", "benchmarks", "examples", "demos","example","sample","samples"}
 
 
 def normalize_language(value: str) -> str:

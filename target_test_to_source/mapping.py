@@ -3,22 +3,7 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-
-
-IGNORED_CALLS = {
-    "assert", "assert_equal", "assertEqual", "assertTrue", "assertFalse",
-    "ASSERT_EQ", "ASSERT_TRUE", "ASSERT_FALSE", "EXPECT_EQ", "EXPECT_TRUE",
-    "EXPECT_FALSE", "REQUIRE", "CHECK", "print", "len", "range", "str",
-    "int", "float", "bool", "list", "dict", "set", "tuple",
-}
-
-
-def calls_from_code(code: str) -> list[str]:
-    """从测试或 helper 代码中提取函数调用名。"""
-    values = re.findall(r"\b([A-Za-z_]\w*)\s*\(", code)
-    return sorted({value for value in values if value not in IGNORED_CALLS})
 
 
 def build_source_test_mapping(
@@ -34,8 +19,7 @@ def build_source_test_mapping(
     mapping: dict[str, list[str]] = {}
     for test in source_tests:
         calls = list(test.get("calls", []))
-        for helper in test.get("helpers", []):
-            calls.extend(calls_from_code(helper))
+        calls.extend(test.get("helper_calls", []))
         ids: list[str] = []
         for call in calls:
             candidates = by_name.get(call, [])
