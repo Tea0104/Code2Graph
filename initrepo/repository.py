@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
 from pathlib import Path
 
 
@@ -25,6 +26,7 @@ IGNORED_DIRS = {
 }
 TEST_DIRS = {"test", "tests", "public_test", "public_tests", "spec", "specs"}
 AUXILIARY_DIRS = {"bench", "benchmark", "benchmarks", "examples", "demos","example","sample","samples"}
+PUBLIC_TEST_SUMMARY = "public_test_summary.json"
 
 
 def normalize_language(value: str) -> str:
@@ -46,7 +48,38 @@ def normalize_source_path(source_path: str | Path) -> Path:
     return root
 
 
-def _is_test(path: Path, root: Path) -> bool:
+def load_public_test_files(root: Path) -> set[str]:
+    """读取数据集提供的 public test 文件清单。"""
+    summary_path = root / PUBLIC_TEST_SUMMARY
+    if not summary_path.is_file():
+        raise FileNotFoundError(
+            f"Source repository is missing {PUBLIC_TEST_SUMMARY}: {summary_path}"
+        )
+
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        values = payload["public_tests"]["test_files"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"{PUBLIC_TEST_SUMMARY} 必须包含 public_tests.test_files 列表"
+        ) from exc
+
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError(f"{PUBLIC_TEST_SUMMARY} 的 test_files 必须是字符串列表")
+
+    result: set[str] = set()
+    for value in values:
+        candidate = (root / value).resolve()
+        try:
+            relative = candidate.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"public test 文件不在仓库内: {value}") from exc
+        result.add(relative)
+    return result
+
+
+def _looks_like_test(path: Path, root: Path) -> bool:
+    """判断路径是否看起来像测试或辅助代码，但不把它认定为正式测试。"""
     relative = path.relative_to(root)
     directories = {part.lower() for part in relative.parts[:-1]}
     stem = path.stem.lower()
@@ -60,15 +93,19 @@ def _is_test(path: Path, root: Path) -> bool:
 
 def scan_repository(root: Path, language: str) -> list[dict]:
     canonical = normalize_language(language)
+    public_test_files = load_public_test_files(root)
     result: list[dict] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or any(part.lower() in IGNORED_DIRS for part in path.parts):
             continue
         if path.suffix.lower() in EXTENSIONS[canonical]:
+            relative = path.relative_to(root).as_posix()
+            is_test = relative in public_test_files
             result.append({
                 "path": path,
                 "language": canonical,
-                "is_test": _is_test(path, root),
+                "is_test": is_test,
+                "dirty_test": not is_test and _looks_like_test(path, root),
             })
     return result
 
@@ -83,7 +120,7 @@ def detect_source_language(source_root: Path) -> str:
 def scan_source_files(root: Path, language: str) -> tuple[list[Path], list[Path]]:
     files = scan_repository(root, language)
     return (
-        [item["path"] for item in files if not item["is_test"]],
+        [item["path"] for item in files if not item["is_test"] and not item["dirty_test"]],
         [item["path"] for item in files if item["is_test"]],
     )
 

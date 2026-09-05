@@ -12,6 +12,14 @@ class RewriteRepoAnalyzeTest(unittest.TestCase):
     def make_repository(self, root: Path) -> None:
         (root / "src").mkdir(parents=True)
         (root / "tests").mkdir()
+        (root / "public_test_summary.json").write_text(
+            json.dumps({
+                "public_tests": {
+                    "test_files": ["tests/test_math_utils.py"],
+                },
+            }),
+            encoding="utf-8",
+        )
         (root / "src" / "__init__.py").write_text("", encoding="utf-8")
         (root / "src" / "math_utils.py").write_text(
             "def add(left, right):\n"
@@ -70,6 +78,54 @@ class RewriteRepoAnalyzeTest(unittest.TestCase):
                 (root / ".code2graph" / "manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["source_language"], "Python")
+
+    def test_summary_is_authoritative_and_dirty_tests_are_ignored(self) -> None:
+        with TemporaryDirectory() as value:
+            root = Path(value) / "demo_repo"
+            (root / "src").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / "bench").mkdir()
+            (root / "public_test_summary.json").write_text(
+                json.dumps({
+                    "public_tests": {
+                        "test_files": ["tests/real_public_test.py"],
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (root / "src" / "module.py").write_text(
+                "def value():\n    return 1\n", encoding="utf-8"
+            )
+            (root / "tests" / "real_public_test.py").write_text(
+                "def test_value():\n    assert True\n", encoding="utf-8"
+            )
+            (root / "tests" / "test_performance.py").write_text(
+                "def test_benchmark():\n    assert True\n", encoding="utf-8"
+            )
+            (root / "bench" / "run_test.py").write_text(
+                "def run_test():\n    return 1\n", encoding="utf-8"
+            )
+
+            from initrepo.repository import scan_repository, scan_source_files
+
+            scanned = {
+                item["path"].relative_to(root).as_posix(): item
+                for item in scan_repository(root, "Python")
+            }
+            self.assertTrue(scanned["tests/real_public_test.py"]["is_test"])
+            self.assertFalse(scanned["tests/real_public_test.py"]["dirty_test"])
+            self.assertFalse(scanned["tests/test_performance.py"]["is_test"])
+            self.assertTrue(scanned["tests/test_performance.py"]["dirty_test"])
+
+            source_files, test_files = scan_source_files(root, "Python")
+            self.assertEqual(
+                {path.relative_to(root).as_posix() for path in source_files},
+                {"src/module.py"},
+            )
+            self.assertEqual(
+                {path.relative_to(root).as_posix() for path in test_files},
+                {"tests/real_public_test.py"},
+            )
 
 
 if __name__ == "__main__":

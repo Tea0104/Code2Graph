@@ -55,7 +55,7 @@ def build_translation_order(source_root: Path, source_language: str, *, include_
     files = [
         item["path"].relative_to(root).as_posix()
         for item in scan_repository(root, language)
-        if include_tests or not item["is_test"]
+        if not item["dirty_test"] and (include_tests or not item["is_test"])
     ]
     dependencies = _dependencies(root, language, files)
     remaining = {path: set(values) for path, values in dependencies.items()}
